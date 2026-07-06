@@ -1,0 +1,13 @@
+{
+  "name": "bug-catcher",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --filter=\"./packages/**\" run build",
+    "test": "pnpm --filter=\"./packages/**\" run test"
+  }
+}
