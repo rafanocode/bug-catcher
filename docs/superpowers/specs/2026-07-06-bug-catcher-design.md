@@ -312,10 +312,12 @@ dependency."
 2. `@bug-catcher/react` — `<BugCatcherBubble />`
 3. `@bug-catcher/supabase-function` — Edge Function template + migrations
 4. `examples/demo-app` — Vite + React integration example
-5. README: 5-minute setup, env vars, required Linear API key scopes
-   (`issue:create` at minimum — exact scope name to confirm during
-   implementation), the signed-URL screenshot rationale (linking the
-   GCS/CORS lesson above), CSP checklist
+5. README: 5-minute setup, env vars, required Linear API key (a personal
+   API key from Linear Settings → API — Linear's personal keys grant full
+   workspace access and aren't scoped, so no narrower scope to select; an
+   OAuth app with `issues:create`/`read` scopes would be the only way to
+   narrow this, out of scope for v1), the signed-URL screenshot rationale
+   (linking the GCS/CORS lesson above), CSP checklist
 6. MIT license
 
 **Explicitly not in v1:** hosted/managed version, Jira/GitHub Issues
