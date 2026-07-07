@@ -32,9 +32,14 @@ subscription.
    security boundary.
 
 3. **Set required env vars** (`supabase secrets set` or your dashboard):
-   - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` — from your Supabase project settings.
    - `LINEAR_API_KEY` — a **personal API key** from Linear (Settings → API). Linear's personal keys grant full workspace access and aren't scoped; there's no narrower scope to select. (An OAuth app with `issues:create`/`read` scopes would be the only way to narrow this — out of scope for this project.)
    - `LINEAR_TEAM_ID` — the Linear team the issue should be created in.
+
+   `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` do
+   **not** need to be set — they're reserved names that the Supabase Edge
+   Functions runtime injects automatically into every deployed function
+   (the Supabase CLI will reject any attempt to set a secret with a
+   `SUPABASE_` prefix).
 
 4. **Deploy the migration and function:**
    ```bash
@@ -94,7 +99,7 @@ follow-up.
 
 Configurable in `config.ts` (`rateLimit: { maxRequests, windowMinutes }`,
 default 5 requests / 10 minutes per user), enforced via a Postgres-backed
-sliding window — no external services required.
+fixed window — no external services required.
 
 ## Not in v1
 
