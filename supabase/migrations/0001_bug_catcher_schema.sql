@@ -22,6 +22,12 @@ create policy "service role full access to submissions"
   using (true)
   with check (true);
 
+-- RLS policies only filter rows a role can already touch — they don't grant
+-- the base table privilege. service_role has no automatic table grants on a
+-- self-hosted/local Postgres instance (only Supabase's hosted platform
+-- auto-grants this), so it must be explicit here for self-hosting to work.
+grant select, insert, update on bug_catcher_submissions to service_role;
+
 -- Postgres-backed sliding-window rate limit: one row per (user, window bucket).
 create table if not exists bug_catcher_rate_limits (
   user_id uuid not null,
@@ -38,6 +44,8 @@ create policy "service role full access to rate limits"
   to service_role
   using (true)
   with check (true);
+
+grant select, insert, update on bug_catcher_rate_limits to service_role;
 
 create or replace function bug_catcher_check_rate_limit(
   p_user_id uuid,
