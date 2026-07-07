@@ -1,0 +1,33 @@
+{
+  "name": "bug-catcher-convex",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build:codegen": "convex codegen --component-dir ./src --typecheck disable && tsc -p .",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "convex": "^1.24.8"
+  },
+  "dependencies": {
+    "@convex-dev/rate-limiter": "^0.3.0"
+  },
+  "devDependencies": {
+    "convex": "^1.24.8",
+    "convex-test": "^0.0.37",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
