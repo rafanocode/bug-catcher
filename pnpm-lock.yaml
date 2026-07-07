@@ -61,8 +61,8 @@ importers:
   packages/react:
     dependencies:
       bug-catcher-core:
-        specifier: workspace:*
-        version: link:../core
+        specifier: ^0.1.0
+        version: 0.1.0
     devDependencies:
       '@supabase/supabase-js':
         specifier: ^2.45.0
@@ -813,6 +813,9 @@ packages:
     resolution: {integrity: sha512-Cu2E6QejHWzuDMTkuwgpABFgDfZrXLQq5V13YOACZx4mFAG4IwGTbTfHPMr4WtxlHoXSM8FIuRwYYCz5XiabaQ==}
     engines: {node: ^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7}
     hasBin: true
+
+  bug-catcher-core@0.1.0:
+    resolution: {integrity: sha512-+yyb2DdHJenRdvDoKtZEpHZDzUGxp7x/v3vVO6Kv1hFOE5iqAYSijYLpXJEmd6sQCHDk0L6MsV7DmNQ+cIhqZw==}
 
   bundle-require@5.1.0:
     resolution: {integrity: sha512-3WrrOuZiyaaZPWiEt4G3+IffISVC9HYlWueJEBWED4ZH4aIAC2PnkdnuRrR94M+w6yGWn4AglWtJtBI8YqvgoA==}
@@ -2039,6 +2042,10 @@ snapshots:
       electron-to-chromium: 1.5.388
       node-releases: 2.0.50
       update-browserslist-db: 1.2.3(browserslist@4.28.5)
+
+  bug-catcher-core@0.1.0:
+    dependencies:
+      modern-screenshot: 4.7.0
 
   bundle-require@5.1.0(esbuild@0.27.7):
     dependencies:
