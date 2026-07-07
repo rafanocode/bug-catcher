@@ -63,6 +63,9 @@ begin
 end;
 $$;
 
+revoke execute on function bug_catcher_check_rate_limit(uuid, int, int) from public;
+grant execute on function bug_catcher_check_rate_limit(uuid, int, int) to service_role;
+
 -- Private bucket: screenshots are never public; the Edge Function generates
 -- 1-year signed URLs embedded directly in the Linear issue description.
 insert into storage.buckets (id, name, public)
