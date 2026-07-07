@@ -1,0 +1,1828 @@
+# bug-catcher Convex Backend Support Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Add Convex as an alternative backend to bug-catcher, shipping a
+publishable Convex Component (`bug-catcher-convex`) and a React wrapper
+(`bug-catcher-react-convex`), without modifying the existing published
+`bug-catcher-core`/`bug-catcher-react` packages.
+
+**Architecture:** `bug-catcher-convex` is a Convex Component: an isolated
+schema (`submissions` table), internal mutations, and one exposed `action`
+(`submissions.handleSubmit`) that performs the durable-first orchestration
+(rate-limit → authorize → screenshot upload → durable insert → Linear call
+→ status update). The component cannot own the public HTTP route directly
+for `authorize` to work (Components are sandboxed and can't receive raw JS
+closures from the consuming app) — instead, the integrator's own
+`convex/http.ts` (a small, required, documented file) defines the route,
+resolves the caller's identity via `ctx.auth.getUserIdentity()`, builds a
+function handle for their own `authorize` function via
+`createFunctionHandle()`, and calls the component's `handleSubmit` action
+with the identity + handle + submission body. `bug-catcher-react-convex`
+reuses `captureContext`/`createConsoleBuffer` from `bug-catcher-core`
+(already backend-agnostic) and posts to the integrator's own Convex HTTP
+Actions URL.
+
+**Tech Stack:** TypeScript (strict), Convex (`convex/server`, Components,
+HTTP Actions, function handles), `@convex-dev/rate-limiter` (official
+component, not hand-rolled), `convex-test` + Vitest for the component's
+tests, React 18/19 for the wrapper, pnpm workspace (same monorepo as the
+existing packages).
+
+## Global Constraints
+
+- Package manager: pnpm. Unscoped npm names (matches the existing
+  `bug-catcher-core`/`bug-catcher-react` convention — no `@bug-catcher`
+  scope, it was never claimed as an npm org): `bug-catcher-convex`,
+  `bug-catcher-react-convex`.
+- TypeScript strict mode everywhere.
+- `bug-catcher-core` and `bug-catcher-react` (already published, 0.1.0 /
+  0.1.1) are **not modified or re-published** by this plan. Only
+  `captureContext` and `createConsoleBuffer` are imported from
+  `bug-catcher-core` — both are backend-agnostic already.
+- **No signed/expiring screenshot URLs in the Convex variant.**
+  `ctx.storage.getUrl()` grants permanent public access until the file is
+  deleted. This must be documented plainly in `bug-catcher-convex`'s
+  README — do not imply parity with the Supabase variant's 1-year signed
+  URL.
+- **`authorize` is required, no default**, exactly like the Supabase
+  variant's design principle — the real security boundary is server-side.
+  For Convex this is implemented via a function handle
+  (`createFunctionHandle`) the integrator creates from their own
+  `internalQuery`/`internalMutation` and passes into
+  `submissions.handleSubmit`. The component must reject the call if no
+  handle is supplied.
+- Rate limiting uses `@convex-dev/rate-limiter` (official Convex
+  Component) — do not hand-roll a fixed-window implementation as was done
+  for the Supabase/SQL variant. Default: 5 requests / 10 minutes,
+  configurable.
+- **Durable-first invariant, identical to the Supabase variant, including
+  the specific lesson learned there:** the `submissions` document is
+  inserted (`linearStatus: "pending"`) before the Linear call, and nothing
+  after that insert may throw an uncaught exception — this explicitly
+  includes the Linear-description-building step (a malformed console-entry
+  timestamp caused exactly this failure mode in the Supabase variant; do
+  not reintroduce it here).
+- HTTP Action request/response body shape matches the Supabase variant
+  exactly: request `{ screenshot, url, userAgent, consoleEntries,
+  description }`; response `{ submissionId, linearStatus, linearIssueUrl
+  }`.
+- Linear's GraphQL API takes the raw API key in the `Authorization` header
+  with **no "Bearer " prefix** (same gotcha as the Supabase variant).
+
+---
+
+## File Structure
+
+```
+bug-catcher/
+├── packages/
+│   ├── convex/                          bug-catcher-convex
+│   │   ├── package.json
+│   │   ├── tsconfig.json
+│   │   ├── src/
+│   │   │   ├── convex.config.ts         defineComponent
+│   │   │   ├── schema.ts                submissions table
+│   │   │   ├── linear.ts                createLinearIssue, buildIssueDescription
+│   │   │   ├── rateLimit.ts             RateLimiter wrapper (@convex-dev/rate-limiter)
+│   │   │   ├── submissions.ts           insert/updateLinearStatus mutations + handleSubmit action
+│   │   │   ├── fixtures/
+│   │   │   │   └── authorize.ts         test-only fixture (under src/ so codegen sees it)
+│   │   │   └── _generated/              generated by `npx convex codegen` (not hand-written)
+│   │   └── test/
+│   │       ├── linear.test.ts
+│   │       ├── submissions.test.ts
+│   │       └── rateLimit.test.ts
+│   └── react-convex/                    bug-catcher-react-convex
+│       ├── package.json
+│       ├── tsconfig.json
+│       ├── tsup.config.ts
+│       ├── vitest.config.ts
+│       ├── src/
+│       │   ├── BugCatcherBubble.tsx
+│       │   └── index.ts
+│       └── test/
+│           ├── setup.ts
+│           └── BugCatcherBubble.test.tsx
+└── examples/
+    └── demo-app-convex/                 reference integration (the "small required glue" lives here)
+        ├── package.json
+        ├── index.html
+        ├── vite.config.ts
+        ├── src/
+        │   ├── main.tsx
+        │   └── App.tsx
+        └── convex/
+            ├── convex.config.ts         app.use(bugCatcher, { env: {...} })
+            ├── schema.ts                (empty/minimal — app owns no bug-catcher tables itself)
+            ├── bugCatcherAuthorize.ts   the integrator's own authorize function
+            └── http.ts                  the required public route, calling into the component
+```
+
+---
+
+### Task 1: `bug-catcher-convex` — scaffold, schema, and `linear.ts`
+
+**Files:**
+- Create: `packages/convex/package.json`
+- Create: `packages/convex/tsconfig.json`
+- Create: `packages/convex/src/schema.ts`
+- Create: `packages/convex/src/convex.config.ts`
+- Create: `packages/convex/src/linear.ts`
+- Test: `packages/convex/test/linear.test.ts`
+
+**Interfaces:**
+- Consumes: nothing from other tasks.
+- Produces: `createLinearIssue(config, input): Promise<LinearResult>`,
+  `buildIssueDescription(params): string` (same signatures/behavior as the
+  Supabase variant's `linear.ts`, including the safe-timestamp-formatting
+  fix) — consumed by Task 5 (`submissions.ts`'s `handleSubmit` action).
+  `schema.ts`'s `submissions` table shape — consumed by Task 3.
+
+- [ ] **Step 1: Confirm the exact Convex Component file/package layout against the real, currently-published `@convex-dev/rate-limiter` package**
+
+Before writing `package.json`, run:
+```bash
+npm view @convex-dev/rate-limiter files
+npm view @convex-dev/rate-limiter exports
+```
+Compare against the brief's `package.json` draft below. This plan's code
+is grounded in Convex's docs as of 2026-07, but Convex Components are a
+newer, faster-moving part of the platform than the rest of this project —
+verify the exports/build shape actually matches a real published component
+before committing to it, and adjust if the real package differs.
+
+- [ ] **Step 2: Scaffold the package**
+
+`packages/convex/package.json`:
+```json
+{
+  "name": "bug-catcher-convex",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build:codegen": "convex codegen --component-only --typecheck disable && tsc -p .",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "convex": "^1.24.0"
+  },
+  "dependencies": {
+    "@convex-dev/rate-limiter": "^0.3.0"
+  },
+  "devDependencies": {
+    "convex": "^1.24.0",
+    "convex-test": "^0.0.37",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
+```
+
+`packages/convex/tsconfig.json`:
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["src"]
+}
+```
+
+`packages/convex/src/schema.ts`:
+```ts
+import { defineSchema, defineTable } from 'convex/server'
+import { v } from 'convex/values'
+
+export default defineSchema({
+  submissions: defineTable({
+    tokenIdentifier: v.string(),
+    url: v.string(),
+    userAgent: v.string(),
+    description: v.string(),
+    consoleEntries: v.array(
+      v.object({
+        level: v.string(),
+        args: v.array(v.any()),
+        timestamp: v.number(),
+      }),
+    ),
+    screenshotId: v.id('_storage'),
+    linearStatus: v.union(v.literal('pending'), v.literal('created'), v.literal('failed')),
+    linearIssueUrl: v.optional(v.string()),
+    linearError: v.optional(v.string()),
+  }),
+})
+```
+
+`packages/convex/src/convex.config.ts`:
+```ts
+import { defineComponent } from 'convex/server'
+
+const component = defineComponent('bugCatcher')
+
+export default component
+```
+
+- [ ] **Step 3: Write the failing test for `linear.ts`**
+
+`packages/convex/test/linear.test.ts`:
+```ts
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { createLinearIssue, buildIssueDescription } from '../src/linear'
+
+const config = { apiKey: 'lin_api_key', teamId: 'team_1' }
+
+describe('createLinearIssue', () => {
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('returns created + issueUrl on success', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/1' } } } }),
+    }) as unknown as typeof fetch
+
+    const result = await createLinearIssue(config, { title: 'Bug', description: 'desc' })
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://api.linear.app/graphql',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'lin_api_key' }),
+      }),
+    )
+    expect(result).toEqual({ status: 'created', issueUrl: 'https://linear.app/issue/1', error: null })
+  })
+
+  it('returns failed + error message on a GraphQL error, never throws', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ errors: [{ message: 'Invalid teamId' }] }),
+    }) as unknown as typeof fetch
+
+    const result = await createLinearIssue(config, { title: 'Bug', description: 'desc' })
+    expect(result).toEqual({ status: 'failed', issueUrl: null, error: 'Invalid teamId' })
+  })
+
+  it('returns failed when fetch itself throws (network error), never throws', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('network unreachable')) as unknown as typeof fetch
+
+    const result = await createLinearIssue(config, { title: 'Bug', description: 'desc' })
+    expect(result.status).toBe('failed')
+    expect(result.error).toBe('network unreachable')
+  })
+})
+
+describe('buildIssueDescription', () => {
+  it('embeds the screenshot, context, and console log', () => {
+    const description = buildIssueDescription({
+      description: 'the button does nothing',
+      url: 'https://app.example.com/page',
+      userAgent: 'test-agent',
+      screenshotUrl: 'https://exuberant-deployment.convex.cloud/api/storage/abc123',
+      consoleEntries: [{ level: 'error', args: ['boom'], timestamp: 1700000000000 }],
+    })
+
+    expect(description).toContain('the button does nothing')
+    expect(description).toContain('![screenshot](https://exuberant-deployment.convex.cloud/api/storage/abc123)')
+    expect(description).toContain('https://app.example.com/page')
+    expect(description).toContain('test-agent')
+    expect(description).toContain('error: boom')
+  })
+
+  it('falls back to a placeholder instead of throwing on a malformed timestamp', () => {
+    const description = buildIssueDescription({
+      description: 'x',
+      url: 'https://example.com',
+      userAgent: 'ua',
+      screenshotUrl: 'https://example.com/shot.png',
+      consoleEntries: [{ level: 'error', args: ['boom'], timestamp: Number.NaN }],
+    })
+
+    expect(description).toContain('(invalid timestamp)')
+  })
+})
+```
+
+- [ ] **Step 4: Run test to verify it fails**
+
+Run: `cd packages/convex && pnpm install && pnpm exec vitest run test/linear.test.ts`
+Expected: FAIL — `../src/linear` does not exist.
+
+- [ ] **Step 5: Implement `linear.ts`**
+
+This is a direct, deliberate port of the lesson learned in the Supabase
+variant's `linear.ts` (the safe-timestamp-formatting fix that closed a
+real durable-first violation found via end-to-end testing) — do not skip
+`formatTimestamp`'s try/catch.
+
+`packages/convex/src/linear.ts`:
+```ts
+export interface LinearConfig {
+  apiKey: string
+  teamId: string
+  projectId?: string
+  labelIds?: string[]
+}
+
+export interface LinearIssueInput {
+  title: string
+  description: string
+}
+
+export interface LinearResult {
+  status: 'created' | 'failed'
+  issueUrl: string | null
+  error: string | null
+}
+
+const LINEAR_API_URL = 'https://api.linear.app/graphql'
+
+const ISSUE_CREATE_MUTATION = `
+  mutation IssueCreate($input: IssueCreateInput!) {
+    issueCreate(input: $input) {
+      success
+      issue { url }
+    }
+  }
+`
+
+export async function createLinearIssue(config: LinearConfig, input: LinearIssueInput): Promise<LinearResult> {
+  try {
+    const response = await fetch(LINEAR_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Linear expects the raw API key here, with no "Bearer " prefix.
+        Authorization: config.apiKey,
+      },
+      body: JSON.stringify({
+        query: ISSUE_CREATE_MUTATION,
+        variables: {
+          input: {
+            teamId: config.teamId,
+            projectId: config.projectId,
+            labelIds: config.labelIds,
+            title: input.title,
+            description: input.description,
+          },
+        },
+      }),
+    })
+
+    const json = await response.json()
+    if (!response.ok || json.errors || !json.data?.issueCreate?.success) {
+      const message = json.errors?.[0]?.message ?? `Linear API responded with status ${response.status}`
+      return { status: 'failed', issueUrl: null, error: message }
+    }
+
+    return { status: 'created', issueUrl: json.data.issueCreate.issue.url, error: null }
+  } catch (err) {
+    return { status: 'failed', issueUrl: null, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+function formatTimestamp(timestamp: number): string {
+  try {
+    return new Date(timestamp).toISOString()
+  } catch {
+    return '(invalid timestamp)'
+  }
+}
+
+function safeStringify(args: unknown[]): string {
+  return args
+    .map((a) => {
+      if (typeof a === 'string') return a
+      try {
+        return JSON.stringify(a)
+      } catch {
+        return String(a)
+      }
+    })
+    .join(' ')
+}
+
+export function buildIssueDescription(params: {
+  description: string
+  url: string
+  userAgent: string
+  screenshotUrl: string
+  consoleEntries: { level: string; args: unknown[]; timestamp: number }[]
+}): string {
+  const consoleBlock = params.consoleEntries
+    .map((e) => `[${formatTimestamp(e.timestamp)}] ${e.level}: ${safeStringify(e.args)}`)
+    .join('\n')
+
+  return [
+    '## Report',
+    params.description,
+    '',
+    '## Screenshot',
+    `![screenshot](${params.screenshotUrl})`,
+    '',
+    '## Context',
+    `- URL: ${params.url}`,
+    `- User agent: ${params.userAgent}`,
+    '',
+    '## Console log',
+    '```',
+    consoleBlock || '(no console entries captured)',
+    '```',
+  ].join('\n')
+}
+```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `pnpm exec vitest run test/linear.test.ts`
+Expected: PASS (5 tests).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/convex
+git commit -m "feat(convex): scaffold bug-catcher-convex, add schema and Linear integration"
+```
+
+---
+
+### Task 2: `bug-catcher-convex` — rate limiter wiring
+
+**Files:**
+- Create: `packages/convex/src/rateLimit.ts`
+- Test: `packages/convex/test/rateLimit.test.ts`
+- Modify: `packages/convex/src/convex.config.ts`
+
+**Interfaces:**
+- Consumes: `@convex-dev/rate-limiter`'s `RateLimiter` class.
+- Produces: `checkRateLimit(ctx, tokenIdentifier, config): Promise<{ ok: boolean; retryAfter?: number }>` — consumed by Task 5's `handleSubmit` action.
+
+- [ ] **Step 1: Verify the real `@convex-dev/rate-limiter` API before writing code**
+
+Run:
+```bash
+cd packages/convex && pnpm add @convex-dev/rate-limiter
+cat node_modules/@convex-dev/rate-limiter/dist/client/index.d.ts | head -80
+```
+Confirm the `RateLimiter` constructor signature, the config shape
+(`kind: 'fixed window' | 'token bucket'`, `rate`, `period`), and the
+`.limit()` method's argument/return shape match what Step 3 below assumes.
+This plan's code is grounded in the package's public GitHub README as of
+2026-07 — a since-published version bump could have changed details;
+adjust Step 3 if the installed package differs.
+
+- [ ] **Step 2: Wire the rate limiter component into `convex.config.ts`**
+
+`packages/convex/src/convex.config.ts` (replace contents):
+```ts
+import { defineComponent } from 'convex/server'
+import rateLimiter from '@convex-dev/rate-limiter/convex.config.js'
+
+const component = defineComponent('bugCatcher')
+component.use(rateLimiter)
+
+export default component
+```
+
+- [ ] **Step 3: Write the failing test**
+
+`packages/convex/test/rateLimit.test.ts`:
+```ts
+import { describe, expect, it, vi } from 'vitest'
+import { checkRateLimit } from '../src/rateLimit'
+
+describe('checkRateLimit', () => {
+  it('returns ok: true when the underlying limiter allows the request', async () => {
+    const fakeLimiter = { limit: vi.fn().mockResolvedValue({ ok: true, retryAfter: undefined }) }
+    const result = await checkRateLimit(fakeLimiter as never, 'user_1', { maxRequests: 5, windowMinutes: 10 })
+    expect(result).toEqual({ ok: true, retryAfter: undefined })
+    expect(fakeLimiter.limit).toHaveBeenCalledWith(
+      expect.anything(),
+      'submit',
+      expect.objectContaining({ key: 'user_1' }),
+    )
+  })
+
+  it('returns ok: false with retryAfter when the limiter denies the request', async () => {
+    const fakeLimiter = { limit: vi.fn().mockResolvedValue({ ok: false, retryAfter: 30000 }) }
+    const result = await checkRateLimit(fakeLimiter as never, 'user_1', { maxRequests: 5, windowMinutes: 10 })
+    expect(result).toEqual({ ok: false, retryAfter: 30000 })
+  })
+})
+```
+
+- [ ] **Step 4: Run test to verify it fails**
+
+Run: `pnpm exec vitest run test/rateLimit.test.ts`
+Expected: FAIL — `../src/rateLimit` does not exist.
+
+- [ ] **Step 5: Implement `rateLimit.ts`**
+
+`packages/convex/src/rateLimit.ts`:
+```ts
+import { RateLimiter, MINUTE } from '@convex-dev/rate-limiter'
+
+export interface RateLimitConfig {
+  maxRequests: number
+  windowMinutes: number
+}
+
+export interface RateLimitResult {
+  ok: boolean
+  retryAfter?: number
+}
+
+// The limiter instance is created by the caller (submissions.ts), which has
+// access to `components.rateLimiter` — this module only shapes the call.
+export async function checkRateLimit(
+  limiter: RateLimiter<{ submit: { kind: 'fixed window'; rate: number; period: number } }>,
+  tokenIdentifier: string,
+  config: RateLimitConfig,
+): Promise<RateLimitResult> {
+  const status = await limiter.limit({} as never, 'submit', {
+    key: tokenIdentifier,
+    config: { kind: 'fixed window', rate: config.maxRequests, period: config.windowMinutes * MINUTE },
+  })
+  return { ok: status.ok, retryAfter: status.retryAfter }
+}
+```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `pnpm exec vitest run test/rateLimit.test.ts`
+Expected: PASS (2 tests).
+
+Note: this test uses a hand-built fake object for `limiter` rather than a
+real `RateLimiter` instance, since constructing a real one requires a
+Convex component registration context. Task 5's test (using `convex-test`)
+exercises the real, wired-up rate limiter end-to-end.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/convex
+git commit -m "feat(convex): wire @convex-dev/rate-limiter"
+```
+
+---
+
+### Task 3: `bug-catcher-convex` — submission mutations
+
+**Files:**
+- Create: `packages/convex/src/submissions.ts` (mutations only in this task; the `handleSubmit` action is added in Task 5)
+- Test: `packages/convex/test/submissions.test.ts`
+
+**Interfaces:**
+- Consumes: `schema.ts`'s `submissions` table (Task 1).
+- Produces: `insert` (internal mutation), `updateLinearStatus` (internal mutation) — consumed by Task 5's `handleSubmit` action via `ctx.runMutation`.
+
+- [ ] **Step 1: Verify `convex-test`'s exact API against the installed package**
+
+Run:
+```bash
+cd packages/convex && pnpm add -D convex-test
+cat node_modules/convex-test/dist/index.d.ts | head -60
+```
+Confirm `convexTest(schema, modules)`, `t.run()`, `t.mutation()` match this
+task's test code below. Adjust if the installed version's API differs —
+`convex-test` is newer/less stable than most of this project's other
+dependencies.
+
+- [ ] **Step 2: Write the failing test**
+
+`packages/convex/test/submissions.test.ts`:
+```ts
+import { convexTest } from 'convex-test'
+import { describe, expect, it } from 'vitest'
+import schema from '../src/schema'
+import { internal } from '../src/_generated/api'
+
+const modules = import.meta.glob('../src/**/*.ts')
+
+describe('submissions.insert', () => {
+  it('inserts a submission with linearStatus pending', async () => {
+    const t = convexTest(schema, modules)
+
+    const storageId = await t.run(async (ctx) => {
+      return await ctx.storage.store(new Blob(['fake-png-bytes']))
+    })
+
+    const submissionId = await t.mutation(internal.submissions.insert, {
+      tokenIdentifier: 'user|123',
+      url: 'https://app.example.com',
+      userAgent: 'test-agent',
+      description: 'it crashed',
+      consoleEntries: [],
+      screenshotId: storageId,
+    })
+
+    const stored = await t.run(async (ctx) => await ctx.db.get(submissionId))
+    expect(stored?.linearStatus).toBe('pending')
+    expect(stored?.description).toBe('it crashed')
+  })
+})
+
+describe('submissions.updateLinearStatus', () => {
+  it('updates linearStatus, linearIssueUrl, and linearError on an existing submission', async () => {
+    const t = convexTest(schema, modules)
+
+    const storageId = await t.run(async (ctx) => await ctx.storage.store(new Blob(['x'])))
+    const submissionId = await t.mutation(internal.submissions.insert, {
+      tokenIdentifier: 'user|123',
+      url: 'https://app.example.com',
+      userAgent: 'test-agent',
+      description: 'it crashed',
+      consoleEntries: [],
+      screenshotId: storageId,
+    })
+
+    await t.mutation(internal.submissions.updateLinearStatus, {
+      submissionId,
+      linearStatus: 'failed',
+      linearError: 'Invalid teamId',
+    })
+
+    const stored = await t.run(async (ctx) => await ctx.db.get(submissionId))
+    expect(stored?.linearStatus).toBe('failed')
+    expect(stored?.linearError).toBe('Invalid teamId')
+    expect(stored?.linearIssueUrl).toBeUndefined()
+  })
+})
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `pnpm exec vitest run test/submissions.test.ts`
+Expected: FAIL — `../src/submissions` (and generated `_generated/api`) does not exist yet.
+
+- [ ] **Step 4: Generate Convex types and implement `submissions.ts`**
+
+Run: `pnpm exec convex codegen --component-only` (generates `src/_generated/`)
+
+`packages/convex/src/submissions.ts`:
+```ts
+import { v } from 'convex/values'
+import { internalMutation } from './_generated/server'
+
+export const insert = internalMutation({
+  args: {
+    tokenIdentifier: v.string(),
+    url: v.string(),
+    userAgent: v.string(),
+    description: v.string(),
+    consoleEntries: v.array(
+      v.object({
+        level: v.string(),
+        args: v.array(v.any()),
+        timestamp: v.number(),
+      }),
+    ),
+    screenshotId: v.id('_storage'),
+  },
+  returns: v.id('submissions'),
+  handler: async (ctx, args) => {
+    return await ctx.db.insert('submissions', {
+      ...args,
+      linearStatus: 'pending',
+    })
+  },
+})
+
+export const updateLinearStatus = internalMutation({
+  args: {
+    submissionId: v.id('submissions'),
+    linearStatus: v.union(v.literal('created'), v.literal('failed')),
+    linearIssueUrl: v.optional(v.string()),
+    linearError: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.submissionId, {
+      linearStatus: args.linearStatus,
+      linearIssueUrl: args.linearIssueUrl,
+      linearError: args.linearError,
+    })
+    return null
+  },
+})
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `pnpm exec vitest run test/submissions.test.ts`
+Expected: PASS (2 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/convex
+git commit -m "feat(convex): add submission insert/updateLinearStatus mutations"
+```
+
+---
+
+### Task 4: `bug-catcher-convex` — the `handleSubmit` action (durable-first orchestration)
+
+This is the most important task in this plan — it enforces the same
+invariant the Supabase variant's `handler.ts` enforces, adapted to Convex's
+call model.
+
+**Files:**
+- Modify: `packages/convex/src/submissions.ts` (add the `handleSubmit` action)
+- Create: `packages/convex/src/fixtures/authorize.ts` (test-only fixture — lives under `src/` deliberately: `convex codegen` only scans `src/`, so `internal.fixtures.authorize.*` would not exist as a typed reference at all if this lived under `test/`. Mirrors `@convex-dev/rate-limiter`'s own published `./test` export path for the same reason — Convex components conventionally ship test utilities as part of `src/`.)
+- Test: `packages/convex/test/handleSubmit.test.ts`
+
+**Interfaces:**
+- Consumes: `insert`/`updateLinearStatus` (Task 3), `checkRateLimit` (Task 2), `createLinearIssue`/`buildIssueDescription` (Task 1).
+- Produces: `handleSubmit` (public `action`, callable via `ctx.runAction(components.bugCatcher.submissions.handleSubmit, args)`) — consumed by Task 6's demo app `http.ts`.
+
+- [ ] **Step 1: Write the failing test**
+
+`packages/convex/test/handleSubmit.test.ts`:
+```ts
+import { convexTest } from 'convex-test'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { createFunctionHandle } from 'convex/server'
+import schema from '../src/schema'
+import { api, internal } from '../src/_generated/api'
+
+const modules = import.meta.glob('../src/**/*.ts')
+
+const linearConfig = { apiKey: 'lin_key', teamId: 'team_1' }
+const rateLimitConfig = { maxRequests: 5, windowMinutes: 10 }
+
+// A stand-in for the "integrator's own authorize function" — in real
+// usage this lives in the consuming app, not in this component.
+async function fakeAuthorizeHandle(t: ReturnType<typeof convexTest>, allow: boolean) {
+  return await t.run(async (ctx) => {
+    // convex-test doesn't expose a way to define ad-hoc functions inline;
+    // this task uses a fixture function checked into src/ (see
+    // src/fixtures/authorize.ts) and creates a handle from it.
+    const mod = allow ? internal.fixtures.authorize.allow : internal.fixtures.authorize.deny
+    return await createFunctionHandle(mod)
+  })
+}
+
+describe('submissions.handleSubmit', () => {
+  const originalFetch = global.fetch
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  const validBody = {
+    tokenIdentifier: 'user|123',
+    screenshot: 'data:image/png;base64,aGVsbG8=',
+    url: 'https://app.example.com/page',
+    userAgent: 'test-agent',
+    consoleEntries: [],
+    description: 'it crashed',
+    rateLimitConfig,
+    linearConfig,
+  }
+
+  it('saves the submission and returns linearStatus created on Linear success', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/1' } } } }),
+    }) as unknown as typeof fetch
+
+    const t = convexTest(schema, modules)
+    const authorizeHandle = await fakeAuthorizeHandle(t, true)
+
+    const result = await t.action(api.submissions.handleSubmit, { ...validBody, authorizeHandle })
+
+    expect(result.linearStatus).toBe('created')
+    expect(result.linearIssueUrl).toBe('https://linear.app/issue/1')
+    expect(result.submissionId).toBeDefined()
+  })
+
+  it('still returns linearStatus failed (never throws) when Linear errors — submission stays saved', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ errors: [{ message: 'Invalid teamId' }] }),
+    }) as unknown as typeof fetch
+
+    const t = convexTest(schema, modules)
+    const authorizeHandle = await fakeAuthorizeHandle(t, true)
+
+    const result = await t.action(api.submissions.handleSubmit, { ...validBody, authorizeHandle })
+
+    expect(result.linearStatus).toBe('failed')
+    expect(result.linearIssueUrl).toBeNull()
+
+    const stored = await t.run(async (ctx) => await ctx.db.get(result.submissionId))
+    expect(stored?.linearStatus).toBe('failed')
+  })
+
+  it('rejects when authorize denies', async () => {
+    const t = convexTest(schema, modules)
+    const authorizeHandle = await fakeAuthorizeHandle(t, false)
+
+    await expect(t.action(api.submissions.handleSubmit, { ...validBody, authorizeHandle })).rejects.toThrow(
+      /forbidden/i,
+    )
+  })
+
+  it('still returns linearStatus failed when the description-building step would throw on a malformed timestamp', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/2' } } } }),
+    }) as unknown as typeof fetch
+
+    const t = convexTest(schema, modules)
+    const authorizeHandle = await fakeAuthorizeHandle(t, true)
+
+    const badBody = {
+      ...validBody,
+      consoleEntries: [{ level: 'error', args: ['boom'], timestamp: Number.NaN }],
+    }
+
+    const result = await t.action(api.submissions.handleSubmit, { ...badBody, authorizeHandle })
+    // The durable-first invariant: this must not throw, and the submission
+    // must exist regardless of the malformed console entry.
+    expect(result.submissionId).toBeDefined()
+  })
+})
+```
+
+`packages/convex/src/fixtures/authorize.ts` (test-only fixture standing in for an integrator's own authorize function — under `src/` so `convex codegen` picks it up as `internal.fixtures.authorize.*`; not part of the package's real public API):
+```ts
+import { v } from 'convex/values'
+import { internalQuery } from '../_generated/server'
+
+export const allow = internalQuery({
+  args: {},
+  returns: v.boolean(),
+  handler: async () => true,
+})
+
+export const deny = internalQuery({
+  args: {},
+  returns: v.boolean(),
+  handler: async () => false,
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pnpm exec vitest run test/handleSubmit.test.ts`
+Expected: FAIL — `handleSubmit` does not exist on `submissions`.
+
+- [ ] **Step 3: Implement `handleSubmit`**
+
+Append to `packages/convex/src/submissions.ts`. Add `action` to the existing
+`import { internalMutation } from './_generated/server'` line from Task 3
+(making it `import { action, internalMutation } from './_generated/server'`)
+rather than adding a second, duplicate import statement. The rest of these
+imports are new:
+```ts
+import { internal, components } from './_generated/api'
+import { RateLimiter } from '@convex-dev/rate-limiter'
+import type { FunctionHandle } from 'convex/server'
+import { createLinearIssue, buildIssueDescription } from './linear'
+import { checkRateLimit } from './rateLimit'
+
+const rateLimiter = new RateLimiter(components.rateLimiter, {
+  submit: { kind: 'fixed window', rate: 5, period: 10 * 60 * 1000 },
+})
+
+export const handleSubmit = action({
+  args: {
+    tokenIdentifier: v.string(),
+    screenshot: v.string(),
+    url: v.string(),
+    userAgent: v.string(),
+    consoleEntries: v.array(
+      v.object({ level: v.string(), args: v.array(v.any()), timestamp: v.number() }),
+    ),
+    description: v.string(),
+    authorizeHandle: v.string(),
+    rateLimitConfig: v.object({ maxRequests: v.number(), windowMinutes: v.number() }),
+    linearConfig: v.object({
+      apiKey: v.string(),
+      teamId: v.string(),
+      projectId: v.optional(v.string()),
+      labelIds: v.optional(v.array(v.string())),
+    }),
+  },
+  returns: v.object({
+    submissionId: v.id('submissions'),
+    linearStatus: v.union(v.literal('created'), v.literal('failed')),
+    linearIssueUrl: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const rateLimitResult = await checkRateLimit(rateLimiter, args.tokenIdentifier, args.rateLimitConfig)
+    if (!rateLimitResult.ok) {
+      throw new Error(`Rate limit exceeded, retry after ${rateLimitResult.retryAfter}ms`)
+    }
+
+    const authorizeFn = args.authorizeHandle as FunctionHandle<'query'>
+    const isAuthorized = await ctx.runQuery(authorizeFn, {})
+    if (!isAuthorized) {
+      throw new Error('Forbidden: authorize() denied this request')
+    }
+
+    const base64Data = args.screenshot.replace(/^data:image\/png;base64,/, '')
+    const bytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0))
+    const screenshotId = await ctx.storage.store(new Blob([bytes], { type: 'image/png' }))
+
+    // Durable-first: this insert must land before the Linear call below.
+    const submissionId = await ctx.runMutation(internal.submissions.insert, {
+      tokenIdentifier: args.tokenIdentifier,
+      url: args.url,
+      userAgent: args.userAgent,
+      description: args.description,
+      consoleEntries: args.consoleEntries,
+      screenshotId,
+    })
+
+    // Everything from here on must never throw past this point — the
+    // submission is already durably saved. A malformed console-entry
+    // timestamp caused exactly this kind of violation in the Supabase
+    // variant; buildIssueDescription's formatTimestamp already guards it,
+    // but this try/catch is defense in depth for anything else.
+    let linearResult
+    try {
+      const screenshotUrl = await ctx.storage.getUrl(screenshotId)
+      linearResult = await createLinearIssue(args.linearConfig, {
+        title: `Bug report: ${args.url}`,
+        description: buildIssueDescription({
+          description: args.description,
+          url: args.url,
+          userAgent: args.userAgent,
+          screenshotUrl: screenshotUrl ?? '(screenshot URL unavailable)',
+          consoleEntries: args.consoleEntries,
+        }),
+      })
+    } catch (err) {
+      linearResult = {
+        status: 'failed' as const,
+        issueUrl: null,
+        error: err instanceof Error ? err.message : 'Unknown error',
+      }
+    }
+
+    await ctx.runMutation(internal.submissions.updateLinearStatus, {
+      submissionId,
+      linearStatus: linearResult.status,
+      linearIssueUrl: linearResult.issueUrl ?? undefined,
+      linearError: linearResult.error ?? undefined,
+    })
+
+    return { submissionId, linearStatus: linearResult.status, linearIssueUrl: linearResult.issueUrl }
+  },
+})
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `pnpm exec vitest run test/handleSubmit.test.ts`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Run the full component test suite**
+
+Run: `pnpm exec vitest run`
+Expected: all tests across `linear.test.ts`, `rateLimit.test.ts`, `submissions.test.ts`, `handleSubmit.test.ts` pass (13 tests total).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/convex
+git commit -m "feat(convex): add handleSubmit action enforcing durable-first submission flow"
+```
+
+---
+
+### Task 5: `bug-catcher-convex` — package build config and README
+
+**Files:**
+- Modify: `packages/convex/package.json` (finalize build script per Task 1's verification)
+- Create: `packages/convex/README.md`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1-4.
+- Produces: the published package's documentation — read by the Task 6 demo app's integrator-side files as the source of truth for wiring.
+
+- [ ] **Step 1: Build the package**
+
+Run: `cd packages/convex && pnpm run build:codegen`
+Expected: `dist/` produced with no TypeScript errors, `_generated/` present under `src/`.
+
+- [ ] **Step 2: Write the README**
+
+`packages/convex/README.md`:
+```markdown
+# bug-catcher-convex
+
+Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — a self-hostable bug-reporting widget that creates Linear issues.
+
+## Important differences from the Supabase variant
+
+- **Screenshot URLs are permanent, not signed/expiring.** Convex Storage's
+  `getUrl()` grants public access to a file for as long as it exists —
+  there is no bucket-privacy or 1-year-signed-URL equivalent here. If a
+  screenshot could contain sensitive on-screen data, know that the link
+  embedded in the Linear issue does not expire and isn't authenticated.
+  The only way to revoke access is deleting the file from Convex Storage.
+- **`authorize` requires a small amount of code in your own app** (a
+  function handle), not just a config file edit. This is Convex's
+  documented pattern for a component calling back into app-specific logic
+  (the same mechanism Convex's own Migrations and Twilio components use).
+
+## Setup
+
+1. Install: `npm install bug-catcher-convex @convex-dev/rate-limiter`
+
+2. In your `convex/convex.config.ts`:
+   ```ts
+   import { defineApp } from 'convex/server'
+   import bugCatcher from 'bug-catcher-convex/convex.config.js'
+
+   const app = defineApp()
+   app.use(bugCatcher, {
+     env: {
+       LINEAR_API_KEY: process.env.LINEAR_API_KEY!,
+       LINEAR_TEAM_ID: process.env.LINEAR_TEAM_ID!,
+     },
+   })
+
+   export default app
+   ```
+
+3. Write your own `authorize` function — this is the real security
+   boundary, required with no default:
+   ```ts
+   // convex/bugCatcherAuthorize.ts
+   import { v } from 'convex/values'
+   import { internalQuery } from './_generated/server'
+
+   export const authorize = internalQuery({
+     args: {},
+     returns: v.boolean(),
+     handler: async (ctx) => {
+       const identity = await ctx.auth.getUserIdentity()
+       return identity != null // replace with your own role/org check
+     },
+   })
+   ```
+
+4. Add the public HTTP route in your own `convex/http.ts`:
+   ```ts
+   import { httpRouter } from 'convex/server'
+   import { httpAction } from './_generated/server'
+   import { createFunctionHandle } from 'convex/server'
+   import { components, internal } from './_generated/api'
+
+   const http = httpRouter()
+
+   http.route({
+     path: '/bug-catcher-submit',
+     method: 'POST',
+     handler: httpAction(async (ctx, request) => {
+       const identity = await ctx.auth.getUserIdentity()
+       if (!identity) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+
+       const body = await request.json()
+       const authorizeHandle = await createFunctionHandle(internal.bugCatcherAuthorize.authorize)
+
+       try {
+         const result = await ctx.runAction(components.bugCatcher.submissions.handleSubmit, {
+           tokenIdentifier: identity.tokenIdentifier,
+           screenshot: body.screenshot,
+           url: body.url,
+           userAgent: body.userAgent,
+           consoleEntries: body.consoleEntries,
+           description: body.description,
+           authorizeHandle,
+           rateLimitConfig: { maxRequests: 5, windowMinutes: 10 },
+           linearConfig: {
+             apiKey: process.env.LINEAR_API_KEY!,
+             teamId: process.env.LINEAR_TEAM_ID!,
+           },
+         })
+         return new Response(JSON.stringify(result), { status: 200 })
+       } catch (err) {
+         const message = err instanceof Error ? err.message : 'Internal error'
+         const status = message.toLowerCase().includes('forbidden') ? 403 : message.toLowerCase().includes('rate limit') ? 429 : 500
+         return new Response(JSON.stringify({ error: message }), { status })
+       }
+     }),
+   })
+
+   export default http
+   ```
+
+5. Deploy: `npx convex deploy`, then set the Linear secrets:
+   `npx convex env set LINEAR_API_KEY ... && npx convex env set LINEAR_TEAM_ID ...`
+
+Your HTTP Action is now live at `https://<your-deployment>.convex.site/bug-catcher-submit`.
+
+## Why the screenshot approach differs from the Supabase variant
+
+The Supabase variant uses a 1-year signed URL on a private Storage bucket.
+Convex Storage doesn't support expiring signed URLs (as of 2026-07) —
+`storage.getUrl()` is permanent until the file is deleted. This is a
+platform capability difference, not a design inconsistency.
+
+## License
+
+MIT
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add packages/convex
+git commit -m "docs(convex): add README with setup guide and screenshot/authorize caveats"
+```
+
+---
+
+### Task 6: `bug-catcher-react-convex` — the React component
+
+**Files:**
+- Create: `packages/react-convex/package.json`
+- Create: `packages/react-convex/tsconfig.json`
+- Create: `packages/react-convex/tsup.config.ts`
+- Create: `packages/react-convex/vitest.config.ts`
+- Create: `packages/react-convex/test/setup.ts`
+- Create: `packages/react-convex/src/BugCatcherBubble.tsx`
+- Create: `packages/react-convex/src/index.ts`
+- Test: `packages/react-convex/test/BugCatcherBubble.test.tsx`
+
+**Interfaces:**
+- Consumes: `captureContext`, `createConsoleBuffer` from `bug-catcher-core` (already published, unmodified).
+- Produces: `<BugCatcherBubble />` with props `{ convexSiteUrl: string; getAuthToken: () => Promise<string>; position?; primaryColor?; consoleBufferSize?; onSubmitted? }` — consumed by Task 7's demo app.
+
+- [ ] **Step 1: Scaffold the package**
+
+`packages/react-convex/package.json`:
+```json
+{
+  "name": "bug-catcher-react-convex",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "bug-catcher-core": "^0.1.0"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/react": "^18.3.0",
+    "jsdom": "^25.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
+```
+
+`packages/react-convex/tsconfig.json`:
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}
+```
+
+`packages/react-convex/tsup.config.ts`:
+```ts
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  entry: ['src/index.ts'],
+  format: ['esm', 'cjs'],
+  dts: true,
+  clean: true,
+  sourcemap: true,
+  external: ['react'],
+})
+```
+
+`packages/react-convex/vitest.config.ts`:
+```ts
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./test/setup.ts'],
+  },
+})
+```
+
+`packages/react-convex/test/setup.ts`:
+```ts
+import '@testing-library/jest-dom/vitest'
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+afterEach(() => cleanup())
+```
+
+- [ ] **Step 2: Write the failing test**
+
+`packages/react-convex/test/BugCatcherBubble.test.tsx`:
+```tsx
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { BugCatcherBubble } from '../src/BugCatcherBubble'
+
+const captureContext = vi.fn()
+
+vi.mock('bug-catcher-core', () => ({
+  createConsoleBuffer: () => ({ entries: [], start: vi.fn(), stop: vi.fn() }),
+  captureContext: (...args: unknown[]) => captureContext(...args),
+}))
+
+describe('BugCatcherBubble', () => {
+  beforeEach(() => {
+    captureContext.mockReset().mockResolvedValue({
+      screenshot: 'data:image/png;base64,abc',
+      url: 'https://app.example.com',
+      userAgent: 'test-agent',
+      consoleEntries: [],
+    })
+  })
+
+  it('opens the form, submits via fetch to convexSiteUrl, and shows success', async () => {
+    const getAuthToken = vi.fn().mockResolvedValue('convex-jwt-token')
+    const onSubmitted = vi.fn()
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ submissionId: 'sub_1', linearStatus: 'created', linearIssueUrl: 'https://linear.app/issue/1' }),
+    }) as unknown as typeof fetch
+
+    render(
+      <BugCatcherBubble
+        convexSiteUrl="https://exuberant-deployment.convex.site"
+        getAuthToken={getAuthToken}
+        onSubmitted={onSubmitted}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Report a bug' }))
+    fireEvent.change(screen.getByLabelText('What were you doing? What went wrong?'), {
+      target: { value: 'it crashed' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => expect(screen.getByText('Report saved. Thank you!')).toBeInTheDocument())
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://exuberant-deployment.convex.site/bug-catcher-submit',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer convex-jwt-token' }),
+      }),
+    )
+    expect(onSubmitted).toHaveBeenCalledWith({
+      submissionId: 'sub_1',
+      linearStatus: 'created',
+      linearIssueUrl: 'https://linear.app/issue/1',
+    })
+  })
+
+  it('shows an error when getAuthToken rejects (no session)', async () => {
+    const getAuthToken = vi.fn().mockRejectedValue(new Error('not signed in'))
+
+    render(<BugCatcherBubble convexSiteUrl="https://exuberant-deployment.convex.site" getAuthToken={getAuthToken} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Report a bug' }))
+    fireEvent.change(screen.getByLabelText('What were you doing? What went wrong?'), {
+      target: { value: 'it crashed' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('not signed in'))
+  })
+})
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `cd packages/react-convex && pnpm install && pnpm exec vitest run`
+Expected: FAIL — `../src/BugCatcherBubble` does not exist.
+
+- [ ] **Step 4: Implement the component**
+
+This reuses `BubbleButton`/`ReportForm`'s UI shape conceptually but is a
+self-contained file (not importing `bug-catcher-react`, which is a
+separate published package this plan does not touch).
+
+`packages/react-convex/src/BugCatcherBubble.tsx`:
+```tsx
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { captureContext, createConsoleBuffer } from 'bug-catcher-core'
+
+export interface SubmitResult {
+  submissionId: string
+  linearStatus: 'created' | 'failed'
+  linearIssueUrl: string | null
+}
+
+export interface BugCatcherBubbleProps {
+  convexSiteUrl: string
+  getAuthToken: () => Promise<string>
+  position?: 'bottom-right' | 'bottom-left'
+  primaryColor?: string
+  consoleBufferSize?: number
+  onSubmitted?: (result: SubmitResult) => void
+}
+
+type Status = 'idle' | 'open' | 'submitting' | 'success' | 'error'
+
+export function BugCatcherBubble({
+  convexSiteUrl,
+  getAuthToken,
+  position = 'bottom-right',
+  primaryColor = '#6366f1',
+  consoleBufferSize = 50,
+  onSubmitted,
+}: BugCatcherBubbleProps) {
+  const consoleBuffer = useMemo(() => createConsoleBuffer(consoleBufferSize), [consoleBufferSize])
+  const [status, setStatus] = useState<Status>('idle')
+  const [description, setDescription] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    consoleBuffer.start()
+    return () => consoleBuffer.stop()
+  }, [consoleBuffer])
+
+  async function handleSubmit() {
+    setStatus('submitting')
+    setError(null)
+    try {
+      const token = await getAuthToken()
+      const context = await captureContext(consoleBuffer.entries)
+
+      const response = await fetch(`${convexSiteUrl}/bug-catcher-submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...context, description }),
+      })
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}) as { error?: string })
+        throw new Error(body.error ?? `Request failed with status ${response.status}`)
+      }
+
+      const result = (await response.json()) as SubmitResult
+      setStatus('success')
+      onSubmitted?.(result)
+    } catch (err) {
+      setStatus('error')
+      setError(err instanceof Error ? err.message : 'Submission failed')
+    }
+  }
+
+  const wrapperStyle: CSSProperties = {
+    position: 'fixed',
+    zIndex: 999999,
+    ...(position === 'bottom-right' ? { bottom: 16, right: 16 } : { bottom: 16, left: 16 }),
+  }
+
+  if (status === 'idle') {
+    return (
+      <div style={wrapperStyle}>
+        <button
+          type="button"
+          aria-label="Report a bug"
+          onClick={() => setStatus('open')}
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: '50%',
+            border: 'none',
+            backgroundColor: primaryColor,
+            color: '#fff',
+            fontSize: 24,
+            cursor: 'pointer',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+          }}
+        >
+          🐞
+        </button>
+      </div>
+    )
+  }
+
+  if (status === 'success') {
+    return (
+      <div style={wrapperStyle}>
+        <div role="dialog" aria-label="Bug report submitted" style={panelStyle}>
+          <p>Report saved. Thank you!</p>
+          <button type="button" onClick={() => setStatus('idle')}>
+            Close
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={wrapperStyle}>
+      <div role="dialog" aria-label="Report a bug" style={panelStyle}>
+        <textarea
+          aria-label="What were you doing? What went wrong?"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          disabled={status === 'submitting'}
+          rows={4}
+          style={{ width: '100%' }}
+        />
+        {status === 'error' && (
+          <p role="alert" style={{ color: '#dc2626' }}>
+            {error}
+          </p>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={status === 'submitting' || description.trim().length === 0}
+            style={{ backgroundColor: primaryColor, color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 4 }}
+          >
+            {status === 'submitting' ? 'Submitting…' : 'Submit'}
+          </button>
+          <button type="button" onClick={() => setStatus('idle')} disabled={status === 'submitting'}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const panelStyle: CSSProperties = {
+  background: '#fff',
+  color: '#111',
+  border: '1px solid #e5e7eb',
+  borderRadius: 8,
+  padding: 12,
+  boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+  width: 280,
+}
+```
+
+`packages/react-convex/src/index.ts`:
+```ts
+export { BugCatcherBubble, type BugCatcherBubbleProps, type SubmitResult } from './BugCatcherBubble'
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `pnpm exec vitest run`
+Expected: PASS (2 tests).
+
+- [ ] **Step 6: Build**
+
+Run: `pnpm run build`
+Expected: `dist/index.js`, `dist/index.cjs`, `dist/index.d.ts` produced, no TypeScript errors.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/react-convex
+git commit -m "feat(react-convex): add BugCatcherBubble for Convex"
+```
+
+---
+
+### Task 7: Demo app — reference integration
+
+**Files:**
+- Create: `examples/demo-app-convex/package.json`
+- Create: `examples/demo-app-convex/index.html`
+- Create: `examples/demo-app-convex/vite.config.ts`
+- Create: `examples/demo-app-convex/tsconfig.json`
+- Create: `examples/demo-app-convex/src/vite-env.d.ts`
+- Create: `examples/demo-app-convex/src/main.tsx`
+- Create: `examples/demo-app-convex/src/App.tsx`
+- Create: `examples/demo-app-convex/convex/convex.config.ts`
+- Create: `examples/demo-app-convex/convex/schema.ts`
+- Create: `examples/demo-app-convex/convex/bugCatcherAuthorize.ts`
+- Create: `examples/demo-app-convex/convex/http.ts`
+
+**Interfaces:**
+- Consumes: `bug-catcher-convex` (Tasks 1-5), `bug-catcher-react-convex` (Task 6).
+- Produces: nothing further consumed — this is the leaf reference integration, and doubles as the real, working example the README points to.
+
+- [ ] **Step 1: Scaffold the Vite app**
+
+`examples/demo-app-convex/package.json`:
+```json
+{
+  "name": "bug-catcher-demo-convex",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "convex:dev": "convex dev"
+  },
+  "dependencies": {
+    "bug-catcher-react-convex": "workspace:*",
+    "convex": "^1.24.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "bug-catcher-convex": "workspace:*",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}
+```
+
+`examples/demo-app-convex/index.html`:
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>bug-catcher Convex demo</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+`examples/demo-app-convex/vite.config.ts`:
+```ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+```
+
+`examples/demo-app-convex/tsconfig.json`:
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["src", "convex"]
+}
+```
+
+`examples/demo-app-convex/src/vite-env.d.ts`:
+```ts
+/// <reference types="vite/client" />
+```
+
+- [ ] **Step 2: Write the Convex-side integration files**
+
+`examples/demo-app-convex/convex/convex.config.ts`:
+```ts
+import { defineApp } from 'convex/server'
+import bugCatcher from 'bug-catcher-convex/convex.config.js'
+
+const app = defineApp()
+app.use(bugCatcher, {
+  env: {
+    LINEAR_API_KEY: process.env.LINEAR_API_KEY!,
+    LINEAR_TEAM_ID: process.env.LINEAR_TEAM_ID!,
+  },
+})
+
+export default app
+```
+
+`examples/demo-app-convex/convex/schema.ts`:
+```ts
+import { defineSchema } from 'convex/server'
+
+// The demo app owns no tables of its own — bug-catcher-convex's
+// submissions table lives inside the component, isolated from this schema.
+export default defineSchema({})
+```
+
+`examples/demo-app-convex/convex/bugCatcherAuthorize.ts`:
+```ts
+import { v } from 'convex/values'
+import { internalQuery } from './_generated/server'
+
+// This is the real security boundary — replace with your own role/org
+// check. For the demo, any signed-in user is authorized.
+export const authorize = internalQuery({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity()
+    return identity != null
+  },
+})
+```
+
+`examples/demo-app-convex/convex/http.ts`:
+```ts
+import { httpRouter } from 'convex/server'
+import { httpAction, createFunctionHandle } from './_generated/server'
+import { components, internal } from './_generated/api'
+
+const http = httpRouter()
+
+http.route({
+  path: '/bug-catcher-submit',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (!identity) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+    }
+
+    const body = await request.json()
+    const authorizeHandle = await createFunctionHandle(internal.bugCatcherAuthorize.authorize)
+
+    try {
+      const result = await ctx.runAction(components.bugCatcher.submissions.handleSubmit, {
+        tokenIdentifier: identity.tokenIdentifier,
+        screenshot: body.screenshot,
+        url: body.url,
+        userAgent: body.userAgent,
+        consoleEntries: body.consoleEntries,
+        description: body.description,
+        authorizeHandle,
+        rateLimitConfig: { maxRequests: 5, windowMinutes: 10 },
+        linearConfig: {
+          apiKey: process.env.LINEAR_API_KEY!,
+          teamId: process.env.LINEAR_TEAM_ID!,
+        },
+      })
+      return new Response(JSON.stringify(result), { status: 200 })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal error'
+      const status = message.toLowerCase().includes('forbidden')
+        ? 403
+        : message.toLowerCase().includes('rate limit')
+          ? 429
+          : 500
+      return new Response(JSON.stringify({ error: message }), { status })
+    }
+  }),
+})
+
+export default http
+```
+
+- [ ] **Step 3: Write the React app**
+
+`examples/demo-app-convex/src/main.tsx`:
+```tsx
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { App } from './App'
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+```
+
+`examples/demo-app-convex/src/App.tsx`:
+```tsx
+import { BugCatcherBubble } from 'bug-catcher-react-convex'
+
+// A real app would use its actual Convex Auth/Clerk/etc. hook here.
+// This demo assumes a `window.__DEMO_CONVEX_TOKEN__` set after sign-in,
+// to keep the demo focused on the bug-catcher integration itself rather
+// than a full auth setup.
+async function getAuthToken(): Promise<string> {
+  const token = (window as unknown as { __DEMO_CONVEX_TOKEN__?: string }).__DEMO_CONVEX_TOKEN__
+  if (!token) throw new Error('Not signed in')
+  return token
+}
+
+export function App() {
+  return (
+    <div style={{ padding: 40, fontFamily: 'sans-serif' }}>
+      <h1>bug-catcher Convex demo</h1>
+      <p>Click the bubble in the bottom-right corner to file a bug report.</p>
+
+      <BugCatcherBubble
+        convexSiteUrl={import.meta.env.VITE_CONVEX_SITE_URL}
+        getAuthToken={getAuthToken}
+        onSubmitted={(result) => console.log('Bug report submitted', result)}
+      />
+    </div>
+  )
+}
+```
+
+`examples/demo-app-convex/.env.example`:
+```
+VITE_CONVEX_SITE_URL=https://your-deployment.convex.site
+```
+
+- [ ] **Step 4: Verify the demo app builds**
+
+Run: `cd /Users/rafa/Code/bug-catcher && pnpm install && pnpm --filter bug-catcher-demo-convex run build`
+Expected: exits 0, produces `examples/demo-app-convex/dist/`, no TypeScript errors.
+
+Note: `convex codegen` for the demo app's own `convex/_generated/` types
+requires a Convex deployment (`npx convex dev` at least once) — this is a
+one-time manual step documented in the demo app's own short README, not
+something this task's build check depends on. The Vite build itself only
+needs the React/TS side to compile.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add examples/demo-app-convex
+git commit -m "feat(demo): add Convex integration example"
+```
+
+---
+
+### Task 8: Final integration pass
+
+**Files:**
+- Modify: none (verification only)
+
+- [ ] **Step 1: Install and build the whole workspace**
+
+Run: `cd /Users/rafa/Code/bug-catcher && pnpm install && pnpm run build`
+Expected: `bug-catcher-core`, `bug-catcher-react`, `bug-catcher-convex`, `bug-catcher-react-convex` all build with no errors.
+
+- [ ] **Step 2: Run every test suite**
+
+Run: `pnpm run test`
+Expected: all Vitest suites pass across all four packages.
+
+- [ ] **Step 3: Confirm no stray Convex deployment artifacts were committed**
+
+Run: `git status --short`
+Expected: clean — in particular, `packages/convex/src/_generated/` and `examples/demo-app-convex/convex/_generated/` must NOT be tracked (Convex-generated code, machine/deployment-specific).
+
+If they show as untracked-but-present, add them to `.gitignore`:
+```bash
+echo "**/convex/_generated/" >> .gitignore
+echo "packages/convex/src/_generated/" >> .gitignore
+git add .gitignore
+git commit -m "chore: gitignore Convex-generated code"
+```
+
+- [ ] **Step 4: Review commit history**
+
+Run: `git log --oneline -15`
+Expected: reads as a clean, task-by-task progression.
