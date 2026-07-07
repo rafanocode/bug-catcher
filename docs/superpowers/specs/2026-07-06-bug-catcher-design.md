@@ -283,9 +283,10 @@ dependency."
 
 ## Error handling
 
-- Client-side capture failures (screenshot or console) don't block
-  submission — the report proceeds with whatever context was successfully
-  captured.
+- A screenshot is required for v1: if client-side screenshot capture fails,
+  submission is blocked with a clear error rather than proceeding without
+  it. Console entries are just an in-memory ring buffer (no async capture
+  step), so there's no equivalent failure mode to guard against there.
 - `401`/`403`/`429`/`400` map to distinct user-facing messages in the
   bubble's UI.
 - Linear failures never surface as a failed submission to the end user;
