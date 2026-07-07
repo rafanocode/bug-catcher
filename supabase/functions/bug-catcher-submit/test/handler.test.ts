@@ -14,10 +14,15 @@ function fakeServiceClient(opts: {
   rateLimitAllowed?: boolean
   insertedId?: string
   uploadError?: { message: string } | null
+  rpcThrows?: boolean
+  updateError?: { message: string } | null
 }): SupabaseClient {
-  const { rateLimitAllowed = true, insertedId = 'sub_1', uploadError = null } = opts
+  const { rateLimitAllowed = true, insertedId = 'sub_1', uploadError = null, rpcThrows = false, updateError = null } = opts
   return {
-    rpc: async () => ({ data: rateLimitAllowed, error: null }),
+    rpc: async () => {
+      if (rpcThrows) return { data: null, error: { message: 'connection reset by peer' } }
+      return { data: rateLimitAllowed, error: null }
+    },
     storage: {
       from: () => ({
         upload: async () => ({ error: uploadError }),
@@ -31,7 +36,7 @@ function fakeServiceClient(opts: {
         }),
       }),
       update: () => ({
-        eq: async () => ({ data: null, error: null }),
+        eq: async () => ({ data: null, error: updateError }),
       }),
     }),
   } as unknown as SupabaseClient
@@ -159,6 +164,55 @@ Deno.test('returns 500 when the screenshot upload fails', async () => {
   }
   const response = await createHandler(deps)(buildRequest(validBody))
   assertEquals(response.status, 500)
+})
+
+Deno.test('returns 500 JSON (not an unhandled rejection) when a dependency throws unexpectedly', async () => {
+  const deps: HandlerDeps = {
+    anonClient: fakeAnonClient({ id: 'user_1' }),
+    serviceClient: fakeServiceClient({ rpcThrows: true }),
+    corsConfig,
+    rateLimitConfig,
+    linearConfig,
+    authorize: async () => true,
+  }
+  const response = await createHandler(deps)(buildRequest(validBody))
+  const json = await response.json()
+
+  assertEquals(response.status, 500)
+  assertEquals(typeof json.error, 'string')
+  assertEquals((json.error as string).includes('connection reset by peer'), true)
+})
+
+Deno.test('still returns 200 when the post-Linear write-back update fails (failure is only logged)', async () => {
+  const originalFetch = globalThis.fetch
+  const originalConsoleError = console.error
+  let loggedArgs: unknown[] | null = null
+  console.error = (...args: unknown[]) => {
+    loggedArgs = args
+  }
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/1' } } } }))) as typeof fetch
+
+  const deps: HandlerDeps = {
+    anonClient: fakeAnonClient({ id: 'user_1' }),
+    serviceClient: fakeServiceClient({ insertedId: 'sub_7', updateError: { message: 'write-back failed' } }),
+    corsConfig,
+    rateLimitConfig,
+    linearConfig,
+    authorize: async () => true,
+  }
+  const response = await createHandler(deps)(buildRequest(validBody))
+  const json = await response.json()
+
+  assertEquals(response.status, 200)
+  assertEquals(json, { submissionId: 'sub_7', linearStatus: 'created', linearIssueUrl: 'https://linear.app/issue/1' })
+  assertEquals(loggedArgs !== null, true)
+  const args = loggedArgs as unknown as unknown[]
+  assertEquals(args[0], 'Failed to update submission after Linear call:')
+  assertEquals(args[1], 'write-back failed')
+
+  console.error = originalConsoleError
+  globalThis.fetch = originalFetch
 })
 
 Deno.test('handles CORS preflight before authentication', async () => {
