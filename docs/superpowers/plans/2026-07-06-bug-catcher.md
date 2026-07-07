@@ -167,7 +167,7 @@ supabase/.temp
 ```
 MIT License
 
-Copyright (c) 2026 Rafa Romero
+Copyright (c) 2026 Rafa Maker
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1292,7 +1292,7 @@ git commit -m "feat(react): add BugCatcherBubble and public package entry point"
 
 - [ ] **Step 1: Initialize the local Supabase project**
 
-Run: `npx supabase init --workdir /Users/rafa/Code/bug-catcher` (installs the CLI on demand via `npx`; accept defaults if prompted for IDE settings)
+Run: `npx supabase init` from the repo root (installs the CLI on demand via `npx`; accept defaults if prompted for IDE settings)
 Expected: creates `supabase/config.toml` and `supabase/.gitignore`. If it also creates a placeholder `supabase/migrations/` directory, that's fine — the next step adds the real migration file into it.
 
 - [ ] **Step 2: Write the migration**
