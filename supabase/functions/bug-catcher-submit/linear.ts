@@ -62,6 +62,17 @@ export async function createLinearIssue(config: LinearConfig, input: LinearIssue
   }
 }
 
+// A malformed console-entry timestamp must never throw here: this function runs
+// after the submission has already been durably inserted, so any exception it
+// raises would surface as a false failure even though the report was saved.
+function formatTimestamp(timestamp: number): string {
+  try {
+    return new Date(timestamp).toISOString()
+  } catch {
+    return '(invalid timestamp)'
+  }
+}
+
 function safeStringify(args: unknown[]): string {
   return args
     .map((a) => {
@@ -83,7 +94,7 @@ export function buildIssueDescription(params: {
   consoleEntries: { level: string; args: unknown[]; timestamp: number }[]
 }): string {
   const consoleBlock = params.consoleEntries
-    .map((e) => `[${new Date(e.timestamp).toISOString()}] ${e.level}: ${safeStringify(e.args)}`)
+    .map((e) => `[${formatTimestamp(e.timestamp)}] ${e.level}: ${safeStringify(e.args)}`)
     .join('\n')
 
   return [

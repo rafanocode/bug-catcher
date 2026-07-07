@@ -62,3 +62,15 @@ Deno.test('buildIssueDescription embeds the screenshot, context, and console log
   assertStringIncludes(description, 'test-agent')
   assertStringIncludes(description, 'error: boom')
 })
+
+Deno.test('buildIssueDescription falls back to a placeholder instead of throwing on a malformed timestamp', () => {
+  const description = buildIssueDescription({
+    description: 'the button does nothing',
+    url: 'https://app.example.com/page',
+    userAgent: 'test-agent',
+    screenshotUrl: 'https://xyz.supabase.co/storage/v1/object/sign/screenshot.png',
+    consoleEntries: [{ level: 'error', args: ['boom'], timestamp: 'not-a-number' as unknown as number }],
+  })
+
+  assertStringIncludes(description, '[(invalid timestamp)] error: boom')
+})

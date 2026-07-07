@@ -215,6 +215,35 @@ Deno.test('still returns 200 when the post-Linear write-back update fails (failu
   globalThis.fetch = originalFetch
 })
 
+Deno.test('still returns 200 when a console entry has a malformed timestamp that would throw during description building', async () => {
+  const originalFetch = globalThis.fetch
+  // If this were reached with a bad description string, fetch would still succeed;
+  // the point of this test is that we never even get an unhandled throw before it.
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/1' } } } }))) as typeof fetch
+
+  const deps: HandlerDeps = {
+    anonClient: fakeAnonClient({ id: 'user_1' }),
+    serviceClient: fakeServiceClient({ insertedId: 'sub_bad_ts' }),
+    corsConfig,
+    rateLimitConfig,
+    linearConfig,
+    authorize: async () => true,
+  }
+  const bodyWithBadTimestamp = {
+    ...validBody,
+    consoleEntries: [{ level: 'error', args: ['boom'], timestamp: 'not-a-number' as unknown as number }],
+  }
+  const response = await createHandler(deps)(buildRequest(bodyWithBadTimestamp))
+  const json = await response.json()
+
+  assertEquals(response.status, 200)
+  assertEquals(json.submissionId, 'sub_bad_ts')
+  assertEquals(json.linearStatus, 'created')
+
+  globalThis.fetch = originalFetch
+})
+
 Deno.test('handles CORS preflight before authentication', async () => {
   const deps: HandlerDeps = {
     anonClient: fakeAnonClient(null),

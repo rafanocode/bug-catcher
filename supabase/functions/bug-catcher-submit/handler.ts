@@ -106,36 +106,48 @@ export function createHandler(deps: HandlerDeps): (req: Request) => Promise<Resp
 
       const submissionId = inserted.id as string
 
-      const linearResult = await createLinearIssue(deps.linearConfig, {
-        title: `Bug report: ${body.url}`,
-        description: buildIssueDescription({
-          description: body.description,
-          url: body.url,
-          userAgent: body.userAgent,
-          screenshotUrl: signedUrlData.signedUrl,
-          consoleEntries: body.consoleEntries,
-        }),
-      })
-
-      const { error: updateError } = await deps.serviceClient
-        .from('bug_catcher_submissions')
-        .update({
-          linear_status: linearResult.status,
-          linear_issue_url: linearResult.issueUrl,
-          linear_error: linearResult.error,
+      // Once the insert above has succeeded, the report is durably saved. Nothing
+      // past this point — description building, the Linear API call, or the
+      // write-back update — may ever turn into a non-200 response: any unexpected
+      // exception here is caught and reported as a failed Linear sync instead.
+      try {
+        const linearResult = await createLinearIssue(deps.linearConfig, {
+          title: `Bug report: ${body.url}`,
+          description: buildIssueDescription({
+            description: body.description,
+            url: body.url,
+            userAgent: body.userAgent,
+            screenshotUrl: signedUrlData.signedUrl,
+            consoleEntries: body.consoleEntries,
+          }),
         })
-        .eq('id', submissionId)
 
-      if (updateError) {
-        console.error('Failed to update submission after Linear call:', updateError.message)
+        const { error: updateError } = await deps.serviceClient
+          .from('bug_catcher_submissions')
+          .update({
+            linear_status: linearResult.status,
+            linear_issue_url: linearResult.issueUrl,
+            linear_error: linearResult.error,
+          })
+          .eq('id', submissionId)
+
+        if (updateError) {
+          console.error('Failed to update submission after Linear call:', updateError.message)
+        }
+
+        // A Linear failure is never a submission failure: the report is already durable.
+        return jsonResponse(
+          { submissionId, linearStatus: linearResult.status, linearIssueUrl: linearResult.issueUrl },
+          200,
+          headers,
+        )
+      } catch (err) {
+        console.error(
+          'Unexpected error while building/sending the Linear issue:',
+          err instanceof Error ? err.message : String(err),
+        )
+        return jsonResponse({ submissionId, linearStatus: 'failed', linearIssueUrl: null }, 200, headers)
       }
-
-      // A Linear failure is never a submission failure: the report is already durable.
-      return jsonResponse(
-        { submissionId, linearStatus: linearResult.status, linearIssueUrl: linearResult.issueUrl },
-        200,
-        headers,
-      )
     } catch (err) {
       return jsonResponse(
         { error: 'Internal error: ' + (err instanceof Error ? err.message : 'unknown') },
