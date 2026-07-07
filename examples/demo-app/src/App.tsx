@@ -1,4 +1,4 @@
-import { BugCatcherBubble } from '@bug-catcher/react'
+import { BugCatcherBubble } from 'bug-catcher-react'
 
 export function App() {
   return (

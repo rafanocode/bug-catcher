@@ -1,5 +1,5 @@
 {
-  "name": "@bug-catcher/react",
+  "name": "bug-catcher-react",
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@bug-catcher/core": "workspace:*"
+    "bug-catcher-core": "workspace:*"
   },
   "peerDependencies": {
     "@supabase/supabase-js": "^2.45.0",

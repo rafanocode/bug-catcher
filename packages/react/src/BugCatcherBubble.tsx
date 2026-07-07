@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { captureContext, createConsoleBuffer, submitReport, type SubmitResult } from '@bug-catcher/core'
+import { captureContext, createConsoleBuffer, submitReport, type SubmitResult } from 'bug-catcher-core'
 import { BubbleButton } from './BubbleButton'
 import { ReportForm } from './ReportForm'
 

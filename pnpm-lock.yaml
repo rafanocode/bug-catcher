@@ -10,12 +10,12 @@ importers:
 
   examples/demo-app:
     dependencies:
-      '@bug-catcher/react':
-        specifier: workspace:*
-        version: link:../../packages/react
       '@supabase/supabase-js':
         specifier: ^2.45.0
         version: 2.110.0
+      bug-catcher-react:
+        specifier: workspace:*
+        version: link:../../packages/react
       react:
         specifier: ^18.3.0
         version: 18.3.1
@@ -60,7 +60,7 @@ importers:
 
   packages/react:
     dependencies:
-      '@bug-catcher/core':
+      bug-catcher-core:
         specifier: workspace:*
         version: link:../core
     devDependencies:

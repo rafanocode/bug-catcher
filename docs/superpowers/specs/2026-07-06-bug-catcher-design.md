@@ -54,23 +54,26 @@ already on Supabase + Linear.
 
 ## Repo layout
 
-pnpm workspaces monorepo, package scope `@bug-catcher/*`:
+pnpm workspaces monorepo. Packages are unscoped on npm (`bug-catcher-core`,
+`bug-catcher-react`) — the `@bug-catcher` npm scope was never claimed as an
+organization, so v1 publishes without it:
 
 ```
 bug-catcher/
 ├── packages/
-│   ├── core/                 @bug-catcher/core
+│   ├── core/                 bug-catcher-core
 │   │   src/capture.ts        screenshot + console buffer + browser/OS info
 │   │   src/submit.ts         submitReport() client
 │   │   src/types.ts
-│   ├── react/                @bug-catcher/react
-│   │   src/BugCatcherBubble.tsx
-│   └── supabase-function/    @bug-catcher/supabase-function
-│       src/index.ts          Deno Edge Function template (copied, not imported,
-│                              into the integrator's supabase/functions/ dir)
-│       src/config.ts         integrator-edited config (authorize, Linear IDs, rate limit)
+│   └── react/                bug-catcher-react
+│       src/BugCatcherBubble.tsx
 ├── supabase/
-│   └── migrations/           bug_catcher_submissions, bug_catcher_rate_limits
+│   ├── migrations/           bug_catcher_submissions, bug_catcher_rate_limits
+│   └── functions/
+│       └── bug-catcher-submit/   Deno Edge Function template (copied, not
+│                                  imported, into the integrator's own
+│                                  supabase/functions/ dir — not an npm
+│                                  package, see Global Constraints below)
 ├── examples/
 │   └── demo-app/             Vite + React integration example (not published)
 ├── docs/
@@ -81,18 +84,18 @@ bug-catcher/
 └── README.md
 ```
 
-`@bug-catcher/core` is framework-agnostic (no React dependency) so future
-Vue/Svelte wrappers can reuse it. `@bug-catcher/react` is a thin wrapper
+`bug-catcher-core` is framework-agnostic (no React dependency) so future
+Vue/Svelte wrappers can reuse it. `bug-catcher-react` is a thin wrapper
 rendering the built-in bubble UI on top of core.
-`@bug-catcher/supabase-function` ships as a scaffold-able template — Supabase
-Edge Functions are deployed source, not an npm runtime dependency, so v1
-provides a copyable template plus migrations, not an installable package in
-the traditional sense.
+The Edge Function ships as a scaffold-able template, not an npm package —
+Supabase Edge Functions are deployed source, not an npm runtime dependency,
+so v1 provides a copyable template plus migrations, not an installable
+package in the traditional sense.
 
 ## Data flow
 
 1. Reporter clicks the bubble (`<BugCatcherBubble />`, client-side React).
-2. Client captures context via `@bug-catcher/core`:
+2. Client captures context via `bug-catcher-core`:
    - Screenshot: `modern-screenshot`, DOM-rendering based, base64 PNG. No
      native screen-capture API, so no permission prompt.
    - `navigator.userAgent`, current URL.
@@ -106,7 +109,7 @@ the traditional sense.
    `POST /functions/v1/bug-catcher-submit` with
    `Authorization: Bearer <Supabase JWT>` (the app's existing Supabase
    session — `@supabase/supabase-js` is a peer dependency of
-   `@bug-catcher/react`).
+   `bug-catcher-react`).
 5. Edge Function (`bug-catcher-submit`), in order:
    a. Verifies the JWT → resolves `user`. `401` if invalid/missing.
    b. Checks the Postgres-backed rate limit for this user. `429` if
@@ -133,7 +136,7 @@ actual success condition the reporter cares about.
 
 ## Package APIs
 
-### `@bug-catcher/core`
+### `bug-catcher-core`
 
 ```ts
 captureContext(): Promise<{
@@ -162,7 +165,7 @@ submitReport(config: {
 }>
 ```
 
-### `@bug-catcher/react`
+### `bug-catcher-react`
 
 ```tsx
 <BugCatcherBubble
@@ -296,11 +299,11 @@ dependency."
 
 ## Testing
 
-- `@bug-catcher/core`: Vitest unit tests for the console ring buffer,
+- `bug-catcher-core`: Vitest unit tests for the console ring buffer,
   capture context assembly, and the submit client (mocked fetch).
-- `@bug-catcher/react`: Vitest + Testing Library for bubble open/close, form
+- `bug-catcher-react`: Vitest + Testing Library for bubble open/close, form
   states (idle/loading/success/error), prop wiring.
-- `@bug-catcher/supabase-function`: Deno test suite for JWT verification,
+- The Edge Function (`supabase/functions/bug-catcher-submit`): Deno test suite for JWT verification,
   the `authorize` gate (allow/deny), rate-limit window logic, and the
   durable-insert-before-Linear-call ordering (mocked Linear API including a
   simulated failure, asserting the row still lands with
@@ -309,9 +312,9 @@ dependency."
 
 ## v1 scope
 
-1. `@bug-catcher/core` — capture + submit logic
-2. `@bug-catcher/react` — `<BugCatcherBubble />`
-3. `@bug-catcher/supabase-function` — Edge Function template + migrations
+1. `bug-catcher-core` — capture + submit logic
+2. `bug-catcher-react` — `<BugCatcherBubble />`
+3. `supabase/functions/bug-catcher-submit` — Edge Function template + migrations
 4. `examples/demo-app` — Vite + React integration example
 5. README: 5-minute setup, env vars, required Linear API key (a personal
    API key from Linear Settings → API — Linear's personal keys grant full

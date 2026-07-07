@@ -8,15 +8,15 @@ subscription.
 
 ## Packages
 
-- `@bug-catcher/core` — framework-agnostic capture + submit logic.
-- `@bug-catcher/react` — the `<BugCatcherBubble />` component.
+- `bug-catcher-core` — framework-agnostic capture + submit logic.
+- `bug-catcher-react` — the `<BugCatcherBubble />` component.
 - `supabase/functions/bug-catcher-submit` — the Edge Function template you deploy.
 
 ## 5-minute setup
 
 1. **Install the React package:**
    ```bash
-   npm install @bug-catcher/react @supabase/supabase-js
+   npm install bug-catcher-react @supabase/supabase-js
    ```
 
 2. **Copy the Edge Function into your own Supabase project:**
@@ -49,7 +49,7 @@ subscription.
 
 5. **Drop the bubble into your app:**
    ```tsx
-   import { BugCatcherBubble } from '@bug-catcher/react'
+   import { BugCatcherBubble } from 'bug-catcher-react'
 
    <BugCatcherBubble
      supabaseUrl={process.env.NEXT_PUBLIC_SUPABASE_URL}

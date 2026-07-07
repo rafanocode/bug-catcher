@@ -12,7 +12,7 @@ vi.mock('@supabase/supabase-js', () => ({
 const captureContext = vi.fn()
 const submitReport = vi.fn()
 
-vi.mock('@bug-catcher/core', () => ({
+vi.mock('bug-catcher-core', () => ({
   createConsoleBuffer: () => ({ entries: [], start: vi.fn(), stop: vi.fn() }),
   captureContext: (...args: unknown[]) => captureContext(...args),
   submitReport: (...args: unknown[]) => submitReport(...args),

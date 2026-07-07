@@ -1,5 +1,5 @@
 {
-  "name": "@bug-catcher/core",
+  "name": "bug-catcher-core",
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
