@@ -14,6 +14,7 @@
     "src"
   ],
   "scripts": {
+    "build": "tsc -p .",
     "build:codegen": "convex codegen --component-dir ./src --typecheck disable && tsc -p .",
     "test": "vitest run"
   },
