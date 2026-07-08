@@ -4,6 +4,7 @@ import { createFunctionHandle } from 'convex/server'
 import rateLimiterTest from '@convex-dev/rate-limiter/test'
 import schema from '../src/schema'
 import { api, internal } from '../src/_generated/api'
+import * as submissionsModule from '../src/submissions'
 
 const modules = import.meta.glob('../src/**/*.ts')
 
@@ -120,5 +121,48 @@ describe('submissions.handleSubmit', () => {
     // The durable-first invariant: this must not throw, and the submission
     // must exist regardless of the malformed console entry.
     expect(result.submissionId).toBeDefined()
+  })
+
+  it('still resolves (never rejects) with the real Linear outcome when persisting that outcome via updateLinearStatus itself fails', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { issueCreate: { success: true, issue: { url: 'https://linear.app/issue/3' } } } }),
+    }) as unknown as typeof fetch
+
+    // `internal.submissions.updateLinearStatus` is a Convex function
+    // reference (a path), not a plain JS function convex-test lets us
+    // mock via vi.mock without also breaking handleSubmit (same module).
+    // convex-test resolves it to this same exported object at call time, so
+    // temporarily replacing its `_handler` (the raw handler convex-test
+    // actually invokes — see convex's `internalMutation` implementation)
+    // simulates a transient failure of just this one mutation call.
+    const originalHandler = submissionsModule.updateLinearStatus._handler
+    submissionsModule.updateLinearStatus._handler = async () => {
+      throw new Error('simulated transient error persisting Linear status')
+    }
+
+    try {
+      const t = setupTest()
+      const authorizeHandle = await fakeAuthorizeHandle(t, true)
+
+      const result = await t.action(api.submissions.handleSubmit, { ...validBody, authorizeHandle })
+
+      // The durable-first invariant extends to this final step: a failure
+      // here must not propagate as a rejected promise, and the response
+      // must still reflect what actually happened with Linear.
+      expect(result.submissionId).toBeDefined()
+      expect(result.linearStatus).toBe('created')
+      expect(result.linearIssueUrl).toBe('https://linear.app/issue/3')
+
+      // Prove the patched `_handler` actually fired (and was actually the
+      // thing swallowed by handleSubmit's try/catch): if it ran
+      // successfully instead, the stored record would read 'created' like
+      // the "Linear success" test above. Since updateLinearStatus never
+      // completed, the record still has whatever `insert` set.
+      const stored = await t.run(async (ctx) => await ctx.db.get(result.submissionId))
+      expect(stored?.linearStatus).toBe('pending')
+    } finally {
+      submissionsModule.updateLinearStatus._handler = originalHandler
+    }
   })
 })

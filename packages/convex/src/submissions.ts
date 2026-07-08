@@ -174,12 +174,23 @@ export const handleSubmit: RegisteredAction<'public', HandleSubmitArgs, Promise<
       }
     }
 
-    await ctx.runMutation(internal.submissions.updateLinearStatus, {
-      submissionId,
-      linearStatus: linearResult.status,
-      linearIssueUrl: linearResult.issueUrl ?? undefined,
-      linearError: linearResult.error ?? undefined,
-    })
+    // This persistence step is itself covered by the durable-first
+    // guarantee above: the submission is already saved and the Linear call
+    // has already run to completion (linearResult is fully computed), so a
+    // failure here (e.g. a transient Convex error) must never turn this
+    // response into a non-200 — it just means the DB record keeps whatever
+    // linearStatus `insert` set ('pending') instead of the real outcome.
+    try {
+      await ctx.runMutation(internal.submissions.updateLinearStatus, {
+        submissionId,
+        linearStatus: linearResult.status,
+        linearIssueUrl: linearResult.issueUrl ?? undefined,
+        linearError: linearResult.error ?? undefined,
+      })
+    } catch {
+      // Swallow: the caller still gets the accurate Linear outcome below,
+      // even though it couldn't be persisted.
+    }
 
     return { submissionId, linearStatus: linearResult.status, linearIssueUrl: linearResult.issueUrl }
   },

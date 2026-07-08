@@ -17,6 +17,17 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
 
 ## Setup
 
+**Prerequisite: an identity provider must already be configured.** Every
+step below assumes your app's own `convex/auth.config.ts` already has an
+identity provider wired up, so that `ctx.auth.getUserIdentity()` (used by
+both `authorize` in Step 3 and `http.ts` in Step 4) returns a real identity
+instead of `null`. This package is provider-agnostic — Convex Auth, Clerk,
+Auth0, or a custom JWT provider all work, and nothing in this package
+assumes a specific one — but it doesn't set one up for you. See Convex's
+own authentication docs for your provider of choice if you haven't
+configured one yet; without it, `http.ts`'s example below will 401 on every
+request.
+
 1. Install: `npm install bug-catcher-convex @convex-dev/rate-limiter`
 
 2. In your `convex/convex.config.ts`, declare your app's own env vars and
