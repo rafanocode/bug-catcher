@@ -234,8 +234,22 @@ export default defineSchema({
 `packages/convex/src/convex.config.ts`:
 ```ts
 import { defineComponent } from 'convex/server'
+import { v } from 'convex/values'
 
-const component = defineComponent('bugCatcher')
+// A component only receives `env` values via the parent's
+// app.use(component, { env }) call if it first declares which env vars it
+// accepts here — omitting this causes both a real tsc compile error and a
+// real Convex CLI push failure for any integrator following the README
+// (found via genuine end-to-end verification in Task 5: a throwaway
+// consumer app, symlinked to the real built package, pushed against a
+// real local Convex backend).
+const component = defineComponent('bugCatcher', {
+  env: {
+    LINEAR_API_KEY: v.string(),
+    LINEAR_TEAM_ID: v.string(),
+    LINEAR_PROJECT_ID: v.optional(v.string()),
+  },
+})
 
 export default component
 ```
@@ -494,12 +508,20 @@ adjust Step 3 if the installed package differs.
 
 - [ ] **Step 2: Wire the rate limiter component into `convex.config.ts`**
 
-`packages/convex/src/convex.config.ts` (replace contents):
+`packages/convex/src/convex.config.ts` (replace contents, keeping Task 1's
+`env` declaration — do not drop it):
 ```ts
 import { defineComponent } from 'convex/server'
+import { v } from 'convex/values'
 import rateLimiter from '@convex-dev/rate-limiter/convex.config.js'
 
-const component = defineComponent('bugCatcher')
+const component = defineComponent('bugCatcher', {
+  env: {
+    LINEAR_API_KEY: v.string(),
+    LINEAR_TEAM_ID: v.string(),
+    LINEAR_PROJECT_ID: v.optional(v.string()),
+  },
+})
 component.use(rateLimiter)
 
 export default component
@@ -1139,16 +1161,36 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
 
 1. Install: `npm install bug-catcher-convex @convex-dev/rate-limiter`
 
-2. In your `convex/convex.config.ts`:
+2. Set the Linear secrets on your Convex deployment (do this before your
+   first push — `defineApp`'s `env` declaration below requires them to
+   already resolve):
+   ```bash
+   npx convex env set LINEAR_API_KEY ...
+   npx convex env set LINEAR_TEAM_ID ...
+   ```
+
+3. In your `convex/convex.config.ts`, declare your app's own env schema and
+   bind it through to the component via `app.env.X` — **not** a raw
+   `process.env.X` literal.  A literal snapshot bakes in whatever's in the
+   *local/CI shell* at push time and never re-reads `npx convex env set`
+   afterward; `app.env.X` is a live reference to your deployment's own
+   env-var store, so re-running `npx convex env set` and redeploying always
+   takes effect:
    ```ts
    import { defineApp } from 'convex/server'
+   import { v } from 'convex/values'
    import bugCatcher from 'bug-catcher-convex/convex.config.js'
 
-   const app = defineApp()
+   const app = defineApp({
+     env: {
+       LINEAR_API_KEY: v.string(),
+       LINEAR_TEAM_ID: v.string(),
+     },
+   })
    app.use(bugCatcher, {
      env: {
-       LINEAR_API_KEY: process.env.LINEAR_API_KEY!,
-       LINEAR_TEAM_ID: process.env.LINEAR_TEAM_ID!,
+       LINEAR_API_KEY: app.env.LINEAR_API_KEY,
+       LINEAR_TEAM_ID: app.env.LINEAR_TEAM_ID,
      },
    })
 
@@ -1222,8 +1264,10 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
    export default http
    ```
 
-5. Deploy: `npx convex deploy`, then set the Linear secrets:
-   `npx convex env set LINEAR_API_KEY ... && npx convex env set LINEAR_TEAM_ID ...`
+5. Deploy: `npx convex deploy`. Because Step 2's secrets are bound live via
+   `app.env.X` (not baked in from a local snapshot), running
+   `npx convex env set LINEAR_API_KEY ...` again later and redeploying
+   always picks up the new value — no other step needed.
 
 Your HTTP Action is now live at `https://<your-deployment>.convex.site/bug-catcher-submit`.
 
@@ -1720,16 +1764,26 @@ export default defineConfig({
 
 - [ ] **Step 2: Write the Convex-side integration files**
 
-`examples/demo-app-convex/convex/convex.config.ts`:
+`examples/demo-app-convex/convex/convex.config.ts`. Run
+`npx convex env set LINEAR_API_KEY ...` / `LINEAR_TEAM_ID` against this demo
+app's own deployment before the first push — `app.env.X` below is a live
+binding to that deployment's own env store, not a local `process.env`
+snapshot (see the README's Setup Step 2/3 for why this matters):
 ```ts
 import { defineApp } from 'convex/server'
+import { v } from 'convex/values'
 import bugCatcher from 'bug-catcher-convex/convex.config.js'
 
-const app = defineApp()
+const app = defineApp({
+  env: {
+    LINEAR_API_KEY: v.string(),
+    LINEAR_TEAM_ID: v.string(),
+  },
+})
 app.use(bugCatcher, {
   env: {
-    LINEAR_API_KEY: process.env.LINEAR_API_KEY!,
-    LINEAR_TEAM_ID: process.env.LINEAR_TEAM_ID!,
+    LINEAR_API_KEY: app.env.LINEAR_API_KEY,
+    LINEAR_TEAM_ID: app.env.LINEAR_TEAM_ID,
   },
 })
 
