@@ -19,16 +19,30 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
 
 1. Install: `npm install bug-catcher-convex @convex-dev/rate-limiter`
 
-2. In your `convex/convex.config.ts`:
+2. In your `convex/convex.config.ts`, declare your app's own env vars and
+   bind them to the component **by reference** (`app.env.X`), not by
+   snapshotting a local `process.env` value. `EnvRef` bindings are resolved
+   from the deployment's own env-var store (the one `npx convex env set`
+   writes to in Step 5 below) — a `process.env.X!` literal here would
+   instead snapshot whatever's in the *local shell* at push time, which is a
+   different, disconnected value store:
    ```ts
    import { defineApp } from 'convex/server'
+   import { v } from 'convex/values'
    import bugCatcher from 'bug-catcher-convex/convex.config.js'
 
-   const app = defineApp()
+   const app = defineApp({
+     env: {
+       LINEAR_API_KEY: v.string(),
+       LINEAR_TEAM_ID: v.string(),
+       LINEAR_PROJECT_ID: v.optional(v.string()),
+     },
+   })
    app.use(bugCatcher, {
      env: {
-       LINEAR_API_KEY: process.env.LINEAR_API_KEY!,
-       LINEAR_TEAM_ID: process.env.LINEAR_TEAM_ID!,
+       LINEAR_API_KEY: app.env.LINEAR_API_KEY,
+       LINEAR_TEAM_ID: app.env.LINEAR_TEAM_ID,
+       LINEAR_PROJECT_ID: app.env.LINEAR_PROJECT_ID,
      },
    })
 
@@ -102,8 +116,16 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
    export default http
    ```
 
-5. Deploy: `npx convex deploy`, then set the Linear secrets:
-   `npx convex env set LINEAR_API_KEY ... && npx convex env set LINEAR_TEAM_ID ...`
+5. Set the Linear secrets on your deployment, **then** deploy — in that
+   order. The `env` values declared on `app` in Step 2 are `EnvRef`
+   bindings, resolved from your deployment's own env-var store; a push
+   fails with `MissingEnvironmentVariables` if the referenced vars aren't
+   set on the deployment first:
+   ```sh
+   npx convex env set LINEAR_API_KEY ...
+   npx convex env set LINEAR_TEAM_ID ...
+   npx convex deploy
+   ```
 
 Your HTTP Action is now live at `https://<your-deployment>.convex.site/bug-catcher-submit`.
 
