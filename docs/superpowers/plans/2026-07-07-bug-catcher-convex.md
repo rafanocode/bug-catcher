@@ -476,7 +476,7 @@ git commit -m "feat(convex): scaffold bug-catcher-convex, add schema and Linear 
 
 **Interfaces:**
 - Consumes: `@convex-dev/rate-limiter`'s `RateLimiter` class.
-- Produces: `checkRateLimit(ctx, tokenIdentifier, config): Promise<{ ok: boolean; retryAfter?: number }>` — consumed by Task 5's `handleSubmit` action.
+- Produces: `checkRateLimit(ctx, limiter, tokenIdentifier, config): Promise<{ ok: boolean; retryAfter?: number }>` — `ctx` must be the real Convex action/mutation context (forwarded to `.limit()`'s internal `runMutation` call, not a placeholder) — consumed by Task 5's `handleSubmit` action.
 
 - [ ] **Step 1: Verify the real `@convex-dev/rate-limiter` API before writing code**
 
@@ -514,11 +514,15 @@ import { checkRateLimit } from '../src/rateLimit'
 
 describe('checkRateLimit', () => {
   it('returns ok: true when the underlying limiter allows the request', async () => {
+    const fakeCtx = {}
     const fakeLimiter = { limit: vi.fn().mockResolvedValue({ ok: true, retryAfter: undefined }) }
-    const result = await checkRateLimit(fakeLimiter as never, 'user_1', { maxRequests: 5, windowMinutes: 10 })
+    const result = await checkRateLimit(fakeCtx as never, fakeLimiter as never, 'user_1', {
+      maxRequests: 5,
+      windowMinutes: 10,
+    })
     expect(result).toEqual({ ok: true, retryAfter: undefined })
     expect(fakeLimiter.limit).toHaveBeenCalledWith(
-      expect.anything(),
+      fakeCtx,
       'submit',
       expect.objectContaining({ key: 'user_1' }),
     )
@@ -526,7 +530,10 @@ describe('checkRateLimit', () => {
 
   it('returns ok: false with retryAfter when the limiter denies the request', async () => {
     const fakeLimiter = { limit: vi.fn().mockResolvedValue({ ok: false, retryAfter: 30000 }) }
-    const result = await checkRateLimit(fakeLimiter as never, 'user_1', { maxRequests: 5, windowMinutes: 10 })
+    const result = await checkRateLimit({} as never, fakeLimiter as never, 'user_1', {
+      maxRequests: 5,
+      windowMinutes: 10,
+    })
     expect(result).toEqual({ ok: false, retryAfter: 30000 })
   })
 })
@@ -539,9 +546,26 @@ Expected: FAIL — `../src/rateLimit` does not exist.
 
 - [ ] **Step 5: Implement `rateLimit.ts`**
 
+**Verify before writing this file:** `.limit()`'s real signature is
+`limit(ctx: RunMutationCtx, name, options)` — it needs a genuine Convex
+context with a working `runMutation` to actually persist the rate-limit
+counter. `checkRateLimit` must accept and forward a real `ctx`, not
+swallow it as a placeholder — confirm the exact type name/import path for
+the context parameter against the installed package (check `RunMutationCtx`
+is exported from `@convex-dev/rate-limiter` itself, or import a compatible
+context type from `convex/server`). Also confirm the generic type
+parameter on `RateLimiter` — passing a named-limit-parameterized type
+(`RateLimiter<{ submit: {...} }>`) is incompatible with also passing an
+inline `config` on every `.limit()` call (a real `tsc` error: "Object
+literal may only specify known properties, and 'config' does not exist");
+plain `RateLimiter` (default type parameter) is correct here since the
+name and config are supplied inline on every call, never pre-registered at
+construction time.
+
 `packages/convex/src/rateLimit.ts`:
 ```ts
 import { RateLimiter, MINUTE } from '@convex-dev/rate-limiter'
+import type { RunMutationCtx } from '@convex-dev/rate-limiter'
 
 export interface RateLimitConfig {
   maxRequests: number
@@ -555,12 +579,16 @@ export interface RateLimitResult {
 
 // The limiter instance is created by the caller (submissions.ts), which has
 // access to `components.rateLimiter` — this module only shapes the call.
+// `ctx` must be the real Convex action/mutation context — `.limit()` calls
+// `ctx.runMutation` internally to persist the counter, so a placeholder
+// object here would throw at runtime, not just fail a type check.
 export async function checkRateLimit(
-  limiter: RateLimiter<{ submit: { kind: 'fixed window'; rate: number; period: number } }>,
+  ctx: RunMutationCtx,
+  limiter: RateLimiter,
   tokenIdentifier: string,
   config: RateLimitConfig,
 ): Promise<RateLimitResult> {
-  const status = await limiter.limit({} as never, 'submit', {
+  const status = await limiter.limit(ctx, 'submit', {
     key: tokenIdentifier,
     config: { kind: 'fixed window', rate: config.maxRequests, period: config.windowMinutes * MINUTE },
   })
@@ -568,15 +596,22 @@ export async function checkRateLimit(
 }
 ```
 
+If `RunMutationCtx` is not actually exported from `@convex-dev/rate-limiter`,
+use whatever the installed package's own `.limit()` signature actually
+requires (check `node_modules/@convex-dev/rate-limiter/dist/client/index.d.ts`)
+— the exact type name matters less than that a real, working Convex context
+flows through to `.limit()` at runtime, not a placeholder.
+
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `pnpm exec vitest run test/rateLimit.test.ts`
 Expected: PASS (2 tests).
 
-Note: this test uses a hand-built fake object for `limiter` rather than a
-real `RateLimiter` instance, since constructing a real one requires a
-Convex component registration context. Task 5's test (using `convex-test`)
-exercises the real, wired-up rate limiter end-to-end.
+Note: this test uses hand-built fake objects for both `ctx` and `limiter`
+rather than real instances, since constructing real ones requires a Convex
+component registration context. Task 5's test (using `convex-test`)
+exercises the real, wired-up rate limiter — including a genuine `ctx` —
+end-to-end.
 
 - [ ] **Step 7: Commit**
 
@@ -932,7 +967,7 @@ export const handleSubmit = action({
     linearIssueUrl: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
-    const rateLimitResult = await checkRateLimit(rateLimiter, args.tokenIdentifier, args.rateLimitConfig)
+    const rateLimitResult = await checkRateLimit(ctx, rateLimiter, args.tokenIdentifier, args.rateLimitConfig)
     if (!rateLimitResult.ok) {
       throw new Error(`Rate limit exceeded, retry after ${rateLimitResult.retryAfter}ms`)
     }
