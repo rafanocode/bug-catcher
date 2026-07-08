@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { captureContext, createConsoleBuffer, submitReport, type SubmitResult } from 'bug-catcher-core'
 import { BubbleButton } from './BubbleButton'
 import { ReportForm } from './ReportForm'
+import { GLOBAL_STYLES, accentVars } from './styles'
 
 export interface BugCatcherBubbleProps {
   supabaseUrl: string
@@ -66,8 +67,10 @@ export function BugCatcherBubble({
         position: 'fixed',
         zIndex: 999999,
         ...(position === 'bottom-right' ? { bottom: 16, right: 16 } : { bottom: 16, left: 16 }),
+        ...accentVars(primaryColor),
       }}
     >
+      <style>{GLOBAL_STYLES}</style>
       {status === 'idle' ? (
         <BubbleButton primaryColor={primaryColor} onClick={() => setStatus('open')} />
       ) : (

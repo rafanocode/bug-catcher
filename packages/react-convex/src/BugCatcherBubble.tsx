@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { captureContext, createConsoleBuffer } from 'bug-catcher-core'
+import { Spinner } from './Spinner'
+import {
+  GLOBAL_STYLES,
+  accentVars,
+  alertStyle,
+  panelStyle,
+  primaryButtonStyle,
+  secondaryButtonStyle,
+  successIconWrapStyle,
+  textareaStyle,
+  titleStyle,
+} from './styles'
 
 export interface SubmitResult {
   submissionId: string
@@ -30,6 +42,7 @@ export function BugCatcherBubble({
   const [status, setStatus] = useState<Status>('idle')
   const [description, setDescription] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [isFocused, setIsFocused] = useState(false)
 
   useEffect(() => {
     consoleBuffer.start()
@@ -67,15 +80,18 @@ export function BugCatcherBubble({
     position: 'fixed',
     zIndex: 999999,
     ...(position === 'bottom-right' ? { bottom: 16, right: 16 } : { bottom: 16, left: 16 }),
+    ...accentVars(primaryColor),
   }
 
   if (status === 'idle') {
     return (
       <div style={wrapperStyle}>
+        <style>{GLOBAL_STYLES}</style>
         <button
           type="button"
           aria-label="Report a bug"
           onClick={() => setStatus('open')}
+          className="bug-catcher-bubble-btn"
           style={{
             width: 56,
             height: 56,
@@ -84,8 +100,12 @@ export function BugCatcherBubble({
             backgroundColor: primaryColor,
             color: '#fff',
             fontSize: 24,
+            lineHeight: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
             cursor: 'pointer',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+            boxShadow: '0 4px 14px rgba(0,0,0,0.25), 0 1px 3px rgba(0,0,0,0.15)',
           }}
         >
           🐞
@@ -97,9 +117,18 @@ export function BugCatcherBubble({
   if (status === 'success') {
     return (
       <div style={wrapperStyle}>
-        <div role="dialog" aria-label="Bug report submitted" style={panelStyle}>
-          <p>Report saved. Thank you!</p>
-          <button type="button" onClick={() => setStatus('idle')}>
+        <style>{GLOBAL_STYLES}</style>
+        <div role="dialog" aria-label="Bug report submitted" className="bug-catcher-panel" style={panelStyle}>
+          <div style={successIconWrapStyle} aria-hidden="true">
+            ✓
+          </div>
+          <p style={{ margin: '0 0 12px', fontSize: 13, color: '#374151' }}>Report saved. Thank you!</p>
+          <button
+            type="button"
+            onClick={() => setStatus('idle')}
+            className="bug-catcher-btn-secondary"
+            style={secondaryButtonStyle(false)}
+          >
             Close
           </button>
         </div>
@@ -107,46 +136,51 @@ export function BugCatcherBubble({
     )
   }
 
+  const submitDisabled = status === 'submitting' || description.trim().length === 0
+
   return (
     <div style={wrapperStyle}>
-      <div role="dialog" aria-label="Report a bug" style={panelStyle}>
+      <style>{GLOBAL_STYLES}</style>
+      <div role="dialog" aria-label="Report a bug" className="bug-catcher-panel" style={panelStyle}>
+        <p style={titleStyle}>🐞 Report a bug</p>
         <textarea
           aria-label="What were you doing? What went wrong?"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
           disabled={status === 'submitting'}
           rows={4}
-          style={{ width: '100%' }}
+          className="bug-catcher-textarea"
+          style={textareaStyle(isFocused)}
         />
         {status === 'error' && (
-          <p role="alert" style={{ color: '#dc2626' }}>
-            {error}
+          <p role="alert" style={alertStyle}>
+            <span aria-hidden="true">⚠️</span> {error}
           </p>
         )}
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={status === 'submitting' || description.trim().length === 0}
-            style={{ backgroundColor: primaryColor, color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 4 }}
+            disabled={submitDisabled}
+            className="bug-catcher-btn-primary"
+            style={primaryButtonStyle(primaryColor, submitDisabled)}
           >
+            {status === 'submitting' && <Spinner />}
             {status === 'submitting' ? 'Submitting…' : 'Submit'}
           </button>
-          <button type="button" onClick={() => setStatus('idle')} disabled={status === 'submitting'}>
+          <button
+            type="button"
+            onClick={() => setStatus('idle')}
+            disabled={status === 'submitting'}
+            className="bug-catcher-btn-secondary"
+            style={secondaryButtonStyle(status === 'submitting')}
+          >
             Cancel
           </button>
         </div>
       </div>
     </div>
   )
-}
-
-const panelStyle: CSSProperties = {
-  background: '#fff',
-  color: '#111',
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
-  padding: 12,
-  boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
-  width: 280,
 }
