@@ -1816,10 +1816,16 @@ export const authorize = internalQuery({
 })
 ```
 
-`examples/demo-app-convex/convex/http.ts`:
+`examples/demo-app-convex/convex/http.ts`. Note: `createFunctionHandle`
+comes from `convex/server`, NOT from `./_generated/server` — an app-level
+generated server file never re-exports it (confirmed empirically: the
+brief's original draft importing it from `./_generated/server` failed to
+typecheck against a real push; the README already had the correct import,
+which this file must match):
 ```ts
 import { httpRouter } from 'convex/server'
-import { httpAction, createFunctionHandle } from './_generated/server'
+import { httpAction } from './_generated/server'
+import { createFunctionHandle } from 'convex/server'
 import { components, internal } from './_generated/api'
 
 const http = httpRouter()
