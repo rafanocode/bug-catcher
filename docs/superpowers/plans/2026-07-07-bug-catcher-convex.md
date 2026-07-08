@@ -713,7 +713,28 @@ Expected: FAIL — `../src/submissions` (and generated `_generated/api`) does no
 
 - [ ] **Step 4: Generate Convex types and implement `submissions.ts`**
 
-Run: `pnpm exec convex codegen --component-only` (generates `src/_generated/`)
+**Correction:** `--component-only` is not a real CLI flag — the real one is
+`--component-dir <path>`, and it requires a Convex deployment to exist
+first (even for component-only codegen). If `src/_generated/` doesn't
+already exist from an earlier task in this package (it may, if Task 1/2's
+verification steps already bootstrapped one), run:
+
+```bash
+# One-time bootstrap: a genuinely credential-free local deployment (no
+# login, no account) — this is the Convex CLI's documented anonymous
+# local-deployment mode, not a workaround.
+pnpm exec convex dev --once --typecheck disable
+# Delete the scaffolded default `convex/` app folder it creates — this
+# package's functions live in `src/`, not `convex/`.
+rm -rf convex
+
+# Now the real codegen command works:
+pnpm exec convex codegen --component-dir ./src --typecheck disable
+```
+
+Run this **after** writing `submissions.ts` below, not before — codegen
+run too early produces an `api.ts` missing the `submissions` module
+entirely. Re-run it again after implementing to pick up the new module.
 
 `packages/convex/src/submissions.ts`:
 ```ts
@@ -1844,17 +1865,21 @@ Expected: `bug-catcher-core`, `bug-catcher-react`, `bug-catcher-convex`, `bug-ca
 Run: `pnpm run test`
 Expected: all Vitest suites pass across all four packages.
 
-- [ ] **Step 3: Confirm no stray Convex deployment artifacts were committed**
+- [ ] **Step 3: Confirm no stray Convex *deployment* artifacts were committed**
+
+**Correction from an earlier draft of this plan:** `packages/convex/src/_generated/*.ts` (the codegen output for the component itself) is **correctly tracked in git**, not gitignored — verified directly against the real `@convex-dev/rate-limiter` component's own repository (its `.gitignore` has no `_generated` entry, and its `src/component/_generated/` directory is a real tracked directory with real files). This matches the actual Convex Component publishing convention: consumers installing the published package need the type surface without running `convex codegen` themselves. Task 3 already committed `packages/convex/src/_generated/*.ts` correctly — do not remove it or gitignore it.
+
+What genuinely must NOT be tracked (local, credential/deployment-specific, not portable across machines): `packages/convex/.env.local`, `packages/convex/.convex/`, `examples/demo-app-convex/convex/.env.local`, `examples/demo-app-convex/convex/_generated/` (an *application's* generated types, as opposed to a *component's* — these are deployment-specific for whichever Convex project the demo app happens to be connected to on a given machine, unlike a published component's `_generated/`, which describes the component's own fixed, stable API surface regardless of deployment).
 
 Run: `git status --short`
-Expected: clean — in particular, `packages/convex/src/_generated/` and `examples/demo-app-convex/convex/_generated/` must NOT be tracked (Convex-generated code, machine/deployment-specific).
+Expected: clean, and confirm via `git ls-files packages/convex/src/_generated/` that those files ARE tracked (not accidentally gitignored by something upstream).
 
-If they show as untracked-but-present, add them to `.gitignore`:
+If `examples/demo-app-convex/convex/.env.local` or `packages/convex/.convex/` show as untracked-but-present and aren't already covered by an existing `.gitignore` entry, add them:
 ```bash
-echo "**/convex/_generated/" >> .gitignore
-echo "packages/convex/src/_generated/" >> .gitignore
+echo "examples/demo-app-convex/convex/_generated/" >> .gitignore
+echo "**/.convex/" >> .gitignore
 git add .gitignore
-git commit -m "chore: gitignore Convex-generated code"
+git commit -m "chore: gitignore Convex app-level (not component-level) generated code and local deployment state"
 ```
 
 - [ ] **Step 4: Review commit history**
