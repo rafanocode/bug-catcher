@@ -4,13 +4,9 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/client/index.d.ts",
-      "default": "./dist/client/index.js"
-    },
     "./convex.config.js": {
-      "types": "./dist/component/convex.config.d.ts",
-      "default": "./dist/component/convex.config.js"
+      "types": "./dist/convex.config.d.ts",
+      "default": "./dist/convex.config.js"
     }
   },
   "files": [
