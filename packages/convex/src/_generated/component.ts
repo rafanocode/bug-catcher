@@ -22,4 +22,31 @@ import type { FunctionReference } from "convex/server";
  * ```
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
-  {};
+  {
+    submissions: {
+      handleSubmit: FunctionReference<
+        "action",
+        "internal",
+        {
+          authorizeHandle: string;
+          consoleEntries: Array<{
+            args: Array<any>;
+            level: string;
+            timestamp: number;
+          }>;
+          description: string;
+          rateLimitConfig: { maxRequests: number; windowMinutes: number };
+          screenshot: string;
+          tokenIdentifier: string;
+          url: string;
+          userAgent: string;
+        },
+        {
+          linearIssueUrl: string | null;
+          linearStatus: "created" | "failed";
+          submissionId: string;
+        },
+        Name
+      >;
+    };
+  };

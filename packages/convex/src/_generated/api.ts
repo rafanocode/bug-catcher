@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as fixtures_authorize from "../fixtures/authorize.js";
 import type * as linear from "../linear.js";
 import type * as rateLimit from "../rateLimit.js";
 import type * as submissions from "../submissions.js";
@@ -20,6 +21,7 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  "fixtures/authorize": typeof fixtures_authorize;
   linear: typeof linear;
   rateLimit: typeof rateLimit;
   submissions: typeof submissions;
