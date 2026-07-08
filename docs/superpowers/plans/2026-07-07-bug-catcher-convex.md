@@ -922,6 +922,20 @@ describe('submissions.handleSubmit', () => {
 })
 ```
 
+**Security correction, applied during implementation, not reflected in the
+test code above:** a security review of this task found that including
+`linearConfig` (containing `apiKey`) in `validBody` and passing it as a
+`handleSubmit` action argument would let a real secret flow through
+Convex's own action-call argument logging in production. Remove
+`linearConfig` from `validBody` and from the args passed to
+`t.action(...)` in every test above; instead, set
+`process.env.LINEAR_API_KEY`/`process.env.LINEAR_TEAM_ID` before each test
+runs (e.g. via `vi.stubEnv('LINEAR_API_KEY', 'lin_key')` /
+`vi.stubEnv('LINEAR_TEAM_ID', 'team_1')`, with `vi.unstubAllEnvs()` in
+`afterEach`), since `handleSubmit` now reads these directly from its own
+environment rather than accepting them as an argument (see the corrected
+`handleSubmit` implementation in Step 3 below).
+
 `packages/convex/src/fixtures/authorize.ts` (test-only fixture standing in for an integrator's own authorize function — under `src/` so `convex codegen` picks it up as `internal.fixtures.authorize.*`; not part of the package's real public API):
 ```ts
 import { v } from 'convex/values'
@@ -973,14 +987,22 @@ export const handleSubmit = action({
       v.object({ level: v.string(), args: v.array(v.any()), timestamp: v.number() }),
     ),
     description: v.string(),
+    // MUST be derived server-side from a verified identity (e.g.
+    // ctx.auth.getUserIdentity().tokenIdentifier) by whatever code calls
+    // this action — never trust a client-supplied string for this field.
+    // handleSubmit itself cannot re-verify it (Convex Components don't
+    // automatically share the parent request's auth context), so the
+    // caller (the integrator's own http.ts) is the trust boundary.
     authorizeHandle: v.string(),
     rateLimitConfig: v.object({ maxRequests: v.number(), windowMinutes: v.number() }),
-    linearConfig: v.object({
-      apiKey: v.string(),
-      teamId: v.string(),
-      projectId: v.optional(v.string()),
-      labelIds: v.optional(v.array(v.string())),
-    }),
+    // Deliberately no `linearConfig` argument: a security review of this
+    // task found that accepting the Linear API key as a per-call argument
+    // would let it flow through Convex's own action-call argument
+    // logging. LINEAR_API_KEY/LINEAR_TEAM_ID are read directly from this
+    // component's own environment instead (see Step 3's handler body) —
+    // set via app.use(bugCatcher, { env: {...} }) at install time, the
+    // same pattern the Supabase variant uses (Deno.env.get('LINEAR_API_KEY')
+    // read server-side, never passed as a request argument).
   },
   returns: v.object({
     submissionId: v.id('submissions'),
@@ -1021,16 +1043,23 @@ export const handleSubmit = action({
     let linearResult
     try {
       const screenshotUrl = await ctx.storage.getUrl(screenshotId)
-      linearResult = await createLinearIssue(args.linearConfig, {
-        title: `Bug report: ${args.url}`,
-        description: buildIssueDescription({
-          description: args.description,
-          url: args.url,
-          userAgent: args.userAgent,
-          screenshotUrl: screenshotUrl ?? '(screenshot URL unavailable)',
-          consoleEntries: args.consoleEntries,
-        }),
-      })
+      linearResult = await createLinearIssue(
+        {
+          apiKey: process.env.LINEAR_API_KEY!,
+          teamId: process.env.LINEAR_TEAM_ID!,
+          projectId: process.env.LINEAR_PROJECT_ID,
+        },
+        {
+          title: `Bug report: ${args.url}`,
+          description: buildIssueDescription({
+            description: args.description,
+            url: args.url,
+            userAgent: args.userAgent,
+            screenshotUrl: screenshotUrl ?? '(screenshot URL unavailable)',
+            consoleEntries: args.consoleEntries,
+          }),
+        },
+      )
     } catch (err) {
       linearResult = {
         status: 'failed' as const,
@@ -1172,10 +1201,14 @@ Convex backend for [bug-catcher](https://github.com/rafanocode/bug-catcher) — 
            description: body.description,
            authorizeHandle,
            rateLimitConfig: { maxRequests: 5, windowMinutes: 10 },
-           linearConfig: {
-             apiKey: process.env.LINEAR_API_KEY!,
-             teamId: process.env.LINEAR_TEAM_ID!,
-           },
+           // Linear's API key is NOT passed here — a security review of Task 4
+           // found this would let a secret flow through Convex's own
+           // action-call argument logging. handleSubmit reads
+           // LINEAR_API_KEY/LINEAR_TEAM_ID directly from the component's own
+           // environment instead (set via app.use(bugCatcher, { env: {...} })
+           // in convex.config.ts below, matching how the Supabase variant of
+           // this project reads Deno.env.get('LINEAR_API_KEY') server-side,
+           // never as a request argument).
          })
          return new Response(JSON.stringify(result), { status: 200 })
        } catch (err) {
@@ -1759,10 +1792,9 @@ http.route({
         description: body.description,
         authorizeHandle,
         rateLimitConfig: { maxRequests: 5, windowMinutes: 10 },
-        linearConfig: {
-          apiKey: process.env.LINEAR_API_KEY!,
-          teamId: process.env.LINEAR_TEAM_ID!,
-        },
+        // Linear's API key is NOT passed here — handleSubmit reads
+        // LINEAR_API_KEY/LINEAR_TEAM_ID from the component's own environment
+        // instead (see convex.config.ts's app.use(bugCatcher, { env: {...} })).
       })
       return new Response(JSON.stringify(result), { status: 200 })
     } catch (err) {
